@@ -51,9 +51,89 @@ const PORT               = Number(argv.port        || process.env.PORT)         
 const HOST               = argv.host                || process.env.HOST               || '0.0.0.0';
 const REFRESH_MS         = Number(argv.refreshMs    || process.env.REFRESH_INTERVAL_MS) || 60_000;
 
+/* ────────  country code → name (3-letter ISO 3166-1 alpha-3)  ──────── */
+const COUNTRY_NAMES = {
+  USA:'United States', RUS:'Russia', CHN:'China', JPN:'Japan', KOR:'South Korea',
+  PRK:'North Korea', IND:'India', ISR:'Israel', IRN:'Iran', SAU:'Saudi Arabia',
+  ARE:'United Arab Emirates', TUR:'Turkey', EGY:'Egypt', KAZ:'Kazakhstan',
+  AUS:'Australia', NZL:'New Zealand', CAN:'Canada', MEX:'Mexico', BRA:'Brazil',
+  ARG:'Argentina', GBR:'United Kingdom', FRA:'France', DEU:'Germany', ITA:'Italy',
+  ESP:'Spain', NLD:'Netherlands', BEL:'Belgium', CHE:'Switzerland', SWE:'Sweden',
+  NOR:'Norway', FIN:'Finland', DNK:'Denmark', POL:'Poland', UKR:'Ukraine',
+  IDN:'Indonesia', MYS:'Malaysia', THA:'Thailand', VNM:'Vietnam', PHL:'Philippines',
+  SGP:'Singapore', PAK:'Pakistan', BGD:'Bangladesh', TWN:'Taiwan', HKG:'Hong Kong',
+  ZAF:'South Africa', NGA:'Nigeria', KEN:'Kenya', ETH:'Ethiopia', MAR:'Morocco',
+  DZA:'Algeria', TUN:'Tunisia', AGO:'Angola', VEN:'Venezuela', CHL:'Chile',
+  COL:'Colombia', PER:'Peru', ECU:'Ecuador', CUB:'Cuba', ROU:'Romania',
+  GRC:'Greece', PRT:'Portugal', IRL:'Ireland', AUT:'Austria', HUN:'Hungary',
+  BGR:'Bulgaria', CZE:'Czech Republic', LKA:'Sri Lanka', NPL:'Nepal', MNG:'Mongolia',
+};
+
+/* ────────  public launch summary  ──────── */
+function summarize(l) {
+  if (!l) return null;
+  const target = new Date(l.net).getTime();
+  const now    = Date.now();
+  const cc     = l.pad?.location?.country_code || l.pad?.country_code || l.launch_service_provider?.country_code || null;
+  return {
+    id:           l.id,
+    slug:         l.slug,
+    name:         l.name,
+    url:          l.url,
+    image:        l.image || l.mission?.infographic || null,
+    status:       l.status ? { id: l.status.id, name: l.status.name, abbrev: l.status.abbrev } : null,
+    net:          l.net,
+    net_precision: l.net_precision?.abbrev || null,
+    window_start: l.window_start || null,
+    window_end:   l.window_end || null,
+    probability:  l.probability,
+    rocket: {
+      name:         l.rocket?.configuration?.full_name || null,
+      family:       l.rocket?.configuration?.family || null,
+      variant:      l.rocket?.configuration?.variant || null,
+      manufacturer: l.rocket?.configuration?.manufacturer?.name || null,
+    },
+    payload: {
+      name:        l.mission?.name || null,
+      type:        l.mission?.type || null,
+      orbit:       l.mission?.orbit?.name || null,
+      orbit_abbrev:l.mission?.orbit?.abbrev || null,
+      description: l.mission?.description || null,
+      customers:   (l.mission?.agencies || []).map((a) => a.name),
+    },
+    location: {
+      country_code: cc,
+      country_name: cc ? (COUNTRY_NAMES[cc] || cc) : null,
+      site:         l.pad?.location?.name || null,
+      pad:          l.pad?.name || null,
+      region:       l.pad?.location?.timezone_name || null,
+      latitude:     l.pad?.latitude || null,
+      longitude:    l.pad?.longitude || null,
+    },
+    operator:  l.launch_service_provider?.name || null,
+    countdown: {
+      server_time:      new Date(now).toISOString(),
+      remaining_ms:     target - now,
+      remaining_seconds: Math.floor((target - now) / 1000),
+      is_future:        target > now,
+    },
+    last_updated: l.last_updated || null,
+  };
+}
+
 /* ────────  static assets  ──────── */
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
+
+/* ────────  CORS for public API  ──────── */
+app.use('/api', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 /* ────────  DB  ──────── */
 const db = dbMod.openDb();
@@ -127,6 +207,60 @@ app.get('/api/ll/stats', (req, res) => {
     upcomingCount: m.upcomingCount,
     pastCount:     m.pastCount,
     nowISO:        new Date().toISOString(),
+  });
+});
+
+/* ────────  PUBLIC API  ──────── */
+
+/* GET /api/ll/next  — closest upcoming launch (full summary) */
+app.get('/api/ll/next', (req, res) => {
+  const nowISO = new Date().toISOString();
+  const list = dbMod.getUpcoming(db, 1, nowISO);
+  if (!list.length) return res.status(404).json({ error: 'no upcoming launch' });
+  res.json(summarize(list[0]));
+});
+
+/* GET /api/ll/latest — most recent past launch */
+app.get('/api/ll/latest', (req, res) => {
+  const nowISO = new Date().toISOString();
+  const list = dbMod.getPast(db, 1, nowISO);
+  if (!list.length) return res.status(404).json({ error: 'no past launch' });
+  res.json(summarize(list[0]));
+});
+
+/* GET /api/ll/upcoming?limit=N — list of upcoming launches (summaries) */
+app.get('/api/ll/upcoming', (req, res) => {
+  const nowISO = new Date().toISOString();
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 10, 60);
+  const list   = dbMod.getUpcoming(db, limit, nowISO);
+  res.json({ count: list.length, results: list.map(summarize) });
+});
+
+/* GET /api/ll/past?limit=N — list of recent past launches (summaries) */
+app.get('/api/ll/past', (req, res) => {
+  const nowISO = new Date().toISOString();
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 10, 60);
+  const list   = dbMod.getPast(db, limit, nowISO);
+  res.json({ count: list.length, results: list.map(summarize) });
+});
+
+/* GET /api/ll/launch/:id — full launch record by id (or slug) */
+app.get('/api/ll/launch/:id', (req, res) => {
+  const id = req.params.id;
+  const row = db.prepare('SELECT data FROM launches WHERE id=? OR slug=?').get(id, id);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  try { res.json(JSON.parse(row.data)); }
+  catch { res.status(500).json({ error: 'corrupt data' }); }
+});
+
+/* GET /api/ll/health — health check */
+app.get('/api/ll/health', (req, res) => {
+  const m = dbMod.getCacheMeta(db);
+  res.json({
+    ok: !!m.lastRefresh,
+    lastRefresh: m.lastRefresh ? new Date(m.lastRefresh).toISOString() : null,
+    totalRows:   m.totalRows,
+    serverTime:  new Date().toISOString(),
   });
 });
 

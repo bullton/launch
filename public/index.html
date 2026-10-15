@@ -109,6 +109,14 @@
     </a>
   </template>
 
+  <div id="modalRoot" class="modal-root" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="modal-close" data-close aria-label="Close">×</button>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>

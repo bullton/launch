@@ -34,3 +34,6 @@ coverage/
 # build output (if any)
 dist/
 build/
+
+# misc dev / reference files
+api_data_sample.txt

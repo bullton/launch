@@ -80,6 +80,33 @@ function imgOf(launch) {
   return launch.image || launch.mission?.infographic || null;
 }
 
+const COUNTRY_3TO2 = {
+  USA:'US', RUS:'RU', CHN:'CN', JPN:'JP', KOR:'KR', PRK:'KP', IND:'IN', ISR:'IL',
+  IRN:'IR', SAU:'SA', ARE:'AE', TUR:'TR', EGY:'EG', KAZ:'KZ', AUS:'AU', NZL:'NZ',
+  CAN:'CA', MEX:'MX', BRA:'BR', ARG:'AR', GBR:'GB', FRA:'FR', DEU:'DE', ITA:'IT',
+  ESP:'ES', NLD:'NL', BEL:'BE', CHE:'CH', SWE:'SE', NOR:'NO', FIN:'FI', DNK:'DK',
+  POL:'PL', UKR:'UA', CZE:'CZ', GRC:'GR', PRT:'PT', IRL:'IE', AUT:'AT', ROU:'RO',
+  HUN:'HU', BGR:'BG', IDN:'ID', MYS:'MY', THA:'TH', VNM:'VN', PHL:'PH', SGP:'SG',
+  PAK:'PK', BGD:'BD', LKA:'LK', NPL:'NP', MNG:'MN', TWN:'TW', HKG:'HK', MAC:'MO',
+  ZAF:'ZA', NGA:'NG', KEN:'KE', ETH:'ET', MAR:'MA', DZA:'DZ', TUN:'TN', LBY:'LY',
+  AGO:'AO', VEN:'VE', CHL:'CL', COL:'CO', PER:'PE', ECU:'EC', CUB:'CU',
+};
+function toFlag(alpha) {
+  if (!alpha) return '';
+  let cc = String(alpha).toUpperCase();
+  if (cc.length === 3) cc = COUNTRY_3TO2[cc] || '';
+  if (cc.length !== 2) return '';
+  const offset = (c) => c.charCodeAt(0) - 65 + 0x1F1E6;
+  return String.fromCodePoint(offset(cc[0]), offset(cc[1]));
+}
+function countryFlag(launch) {
+  return toFlag(
+    launch.launch_service_provider?.country_code ||
+    launch.pad?.location?.country_code ||
+    launch.pad?.country_code || ''
+  );
+}
+
 function escapeHTML(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -117,7 +144,7 @@ function renderHero(launch) {
     `<span>PAD: <b>${escapeHTML(launch.pad?.name || "—")}</b></span>`,
     `<span>LOC: <b>${escapeHTML(launch.pad?.location?.name || "—")}</b></span>`,
   ].join("");
-  document.querySelector("#heroLink").href = launch.url || "#";
+  document.querySelector("#heroLink").href = "#";
 
   const bg = document.querySelector("#heroBg");
   const url = imgOf(launch);
@@ -157,12 +184,19 @@ function makeCard(launch, { past } = {}) {
   rocketEl.innerHTML = `<b>${escapeHTML(launch.launch_service_provider?.name || "—")}</b> · ${escapeHTML(launch.rocket?.configuration?.full_name || "—")}`;
   padEl.innerHTML = `PAD <b>${escapeHTML(launch.pad?.name || "—")}</b> · ${escapeHTML(launch.pad?.location?.name || "—")}`;
 
-  node.href = launch.url || "#";
+  node.href = "#";
   node.dataset.net = launch.net;
   node.dataset.past = past ? "1" : "0";
+  node.addEventListener("click", (e) => {
+    e.preventDefault();
+    openModal(launch);
+  });
 
   const url = imgOf(launch);
   if (url) imgEl.style.backgroundImage = `url("${url}")`;
+
+  const flag = countryFlag(launch);
+  if (flag) imgEl.setAttribute('data-flag', flag);
 
   if (past) {
     cdEl.classList.add("past");
@@ -188,6 +222,242 @@ function tickCard(node) {
     statusEl.textContent = "LAUNCH SUCCESS";
   }
 }
+
+/* =====================================================================
+   MODAL — detailed launch view
+   ===================================================================== */
+function fmtDur(iso) {
+  if (!iso) return "—";
+  const m = String(iso).match(/^P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?|(\d+)D)/);
+  if (!m) return iso;
+  const [, h, mn, s, d] = m;
+  if (d) return `${d}D`;
+  if (h && mn && s) return `${h.padStart(2,'0')}:${mn.padStart(2,'0')}:${s.padStart(2,'0')}`;
+  if (h && mn)      return `${h.padStart(2,'0')}:${mn.padStart(2,'0')}`;
+  if (mn && s)      return `${mn.padStart(2,'0')}:${s.padStart(2,'0')}`;
+  if (h)            return `${h}H`;
+  if (mn)           return `${mn}M`;
+  return `${s}S`;
+}
+const fmtRel = (iso) => iso && iso.startsWith('P') ? (iso.includes('T') && !iso.startsWith('PT') ? 'T+ ' : 'T- ') + fmtDur(iso) : 'T0';
+
+function openModal(launch) {
+  const root = document.querySelector("#modalRoot");
+  const body = document.querySelector("#modalBody");
+
+  const st = statusOf(launch.status);
+  const lsp = launch.launch_service_provider || {};
+  const rocket = launch.rocket || {};
+  const cfg = rocket.configuration || {};
+  const mfr = cfg.manufacturer || {};
+  const pad = launch.pad || {};
+  const loc = pad.location || {};
+  const mission = launch.mission || {};
+  const orbit = mission.orbit || {};
+  const stage = rocket.launcher_stage?.[0];
+  const stageLauncher = stage?.launcher || {};
+  const stageLanding = stage?.landing || {};
+  const stageLandingLoc = stageLanding.location || {};
+  const stageLandingType = stageLanding.type || {};
+
+  const flag = countryFlag(launch);
+
+  const heroBg = imgOf(launch);
+  const cell = (k, v, small) =>
+    v == null || v === "" ? "" :
+    `<div class="m-cell"><div class="k">${escapeHTML(k)}</div><div class="v">${v}${small ? ` <small>${escapeHTML(small)}</small>` : ""}</div></div>`;
+
+  const programList = (cfg.program || [])
+    .map(p => `<span style="color:#fff">${escapeHTML(p.name)}</span>`)
+    .join(' · ') || "—";
+
+  let stageHTML = "";
+  if (stage) {
+    const serial = stageLauncher.serial_number || "—";
+    const flightNo = stage.launcher_flight_number ?? "—";
+    const reused = stage.reused ? "REUSED" : "NEW";
+    const status = stageLanding.attempt
+      ? (stageLanding.success === true ? "LANDING SUCCESS"
+        : stageLanding.success === false ? "LANDING FAILURE"
+        : "LANDING TBD")
+      : "NO LANDING";
+    const landWhere = stageLandingLoc.name || "—";
+    const landType = stageLandingType.abbrev || "";
+    const prev = stage.previous_flight?.name;
+    const turn = stage.turn_around_time_days;
+
+    stageHTML = `
+      <div class="m-section">
+        <h3>LAUNCHER STAGE · 助推器</h3>
+        <div class="m-stage">
+          <div class="m-stage-head">
+            <div class="m-stage-name">
+              <b>${escapeHTML(stage.type || "Stage")}</b>
+              <small>SERIAL ${escapeHTML(serial)} · FLIGHT #${escapeHTML(String(flightNo))}</small>
+            </div>
+            <span class="m-stage-tag${stage.reused ? " used" : ""}">${reused}</span>
+          </div>
+          <div class="m-grid">
+            ${cell("Landing", status)}
+            ${cell("Landing Site", landWhere, landType)}
+            ${cell("Downrange", stageLanding.downrange_distance ? `${stageLanding.downrange_distance} km` : "—")}
+            ${cell("Previous Flight", prev || "—")}
+            ${cell("Turnaround", turn ? `${turn} d` : "—")}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  const updatesHTML = (launch.updates || []).slice(0, 6).map(u => `
+    <div class="m-update">
+      <div class="m-update-text">
+        <div class="m-update-comment">${escapeHTML(u.comment || "")}</div>
+        <div class="m-update-meta">
+          <span>${escapeHTML(u.created_by || "")}</span>
+          <span>${escapeHTML(fmtUTC(u.created_on))}</span>
+          ${u.info_url ? `<a href="${escapeHTML(u.info_url)}" target="_blank" rel="noopener">SOURCE →</a>` : ""}
+        </div>
+      </div>
+    </div>`).join("") || `<div class="m-desc" style="color:var(--text-mute)">No updates yet</div>`;
+
+  const timelineHTML = (launch.timeline || []).map(t => `
+    <div class="when">${escapeHTML(fmtRel(t.relative_time))}</div>
+    <div class="ev">
+      <b>${escapeHTML(t.type?.abbrev || "—")}</b>
+      <span>${escapeHTML(t.type?.description || "")}</span>
+    </div>`).join("") || `<div class="when">—</div><div class="ev"><b>No timeline</b></div>`;
+
+  const infoLinks = (launch.infoURLs || [])
+    .map(l => `<a class="m-link" href="${escapeHTML(l.url)}" target="_blank" rel="noopener">${escapeHTML(l.title || l.source || "INFO")}</a>`)
+    .join("");
+  const vidLinks = (launch.vidURLs || [])
+    .map(l => `<a class="m-link video" href="${escapeHTML(l.url)}" target="_blank" rel="noopener">▶ ${escapeHTML(l.title || "WEBCAST")}</a>`)
+    .join("");
+  const linksHTML = (infoLinks + vidLinks) || `<div class="m-desc" style="color:var(--text-mute)">No links</div>`;
+
+  body.innerHTML = `
+    <div class="m-hero" style="${heroBg ? `background-image:url('${heroBg.replace(/'/g, "\\'")}')` : ""}">
+      ${flag ? `<div class="m-hero-flag">${flag}</div>` : ""}
+      <div class="m-hero-content">
+        <span class="m-status ${st.cls}">${escapeHTML(st.label)}</span>
+        <h2 class="m-title">${escapeHTML(launch.name)}</h2>
+        <div class="m-sub">
+          <span>NET <b>${escapeHTML(fmtUTC(launch.net))}</b></span>
+          ${launch.window_start ? `<span>WINDOW <b>${escapeHTML(fmtUTC(launch.window_start))} → ${escapeHTML(fmtUTC(launch.window_end))}</b></span>` : ""}
+          ${launch.probability ? `<span>GO PROB <b>${launch.probability}%</b></span>` : ""}
+        </div>
+      </div>
+    </div>
+
+    <div class="m-section">
+      <h3>MISSION · 任务</h3>
+      <div class="m-desc">${escapeHTML(mission.description || "No mission description.")}</div>
+      <div class="m-grid" style="margin-top:18px">
+        ${cell("Mission", mission.name)}
+        ${cell("Type", mission.type)}
+        ${cell("Orbit", orbit.name, orbit.abbrev)}
+        ${cell("Customer", (mission.agencies || []).map(a => a.name).join(", ") || "—")}
+      </div>
+    </div>
+
+    <div class="m-section">
+      <h3>ROCKET · 火箭</h3>
+      <div class="m-grid">
+        ${cell("Configuration", cfg.full_name || cfg.name)}
+        ${cell("Family", cfg.family)}
+        ${cell("Variant", cfg.variant)}
+        ${cell("Manufacturer", mfr.name)}
+        ${cell("Length", cfg.length ? `${cfg.length} m` : "—")}
+        ${cell("Diameter", cfg.diameter ? `${cfg.diameter} m` : "—")}
+        ${cell("Launch Mass", cfg.launch_mass ? `${cfg.launch_mass} t` : "—")}
+        ${cell("Thrust", cfg.to_thrust ? `${cfg.to_thrust} kN` : "—")}
+        ${cell("LEO Capacity", cfg.leo_capacity ? `${cfg.leo_capacity} kg` : "—")}
+        ${cell("GTO Capacity", cfg.gto_capacity ? `${cfg.gto_capacity} kg` : "—")}
+        ${cell("Stages", cfg.min_stage)}
+        ${cell("Maiden Flight", cfg.maiden_flight)}
+        ${cell("Launch Cost", cfg.launch_cost ? `$${Number(cfg.launch_cost).toLocaleString()}` : "—")}
+        ${cell("Total Flights", cfg.total_launch_count)}
+        ${cell("Success Rate", cfg.total_launch_count ? `${(cfg.successful_launches/cfg.total_launch_count*100).toFixed(1)}% (${cfg.successful_launches}/${cfg.total_launch_count})` : "—")}
+        ${cell("Program", programList)}
+      </div>
+    </div>
+
+    <div class="m-section">
+      <h3>LAUNCH SITE · 发射场</h3>
+      <div class="m-grid">
+        ${cell("Pad", pad.name)}
+        ${cell("Location", loc.name)}
+        ${cell("Region", loc.timezone_name)}
+        ${cell("Coordinates", pad.latitude && pad.longitude ? `${pad.latitude}, ${pad.longitude}` : "—")}
+        ${cell("Total Pad Launches", pad.total_launch_count)}
+        ${cell("Pad Turnaround", launch.pad_turnaround ? fmtDur(launch.pad_turnaround) : "—")}
+      </div>
+      ${pad.description ? `<div class="m-desc" style="margin-top:16px;color:var(--text-dim)">${escapeHTML(pad.description)}</div>` : ""}
+    </div>
+
+    ${stageHTML}
+
+    <div class="m-section">
+      <h3>OPERATOR · 运营方</h3>
+      <div class="m-grid">
+        ${cell("Provider", lsp.name)}
+        ${cell("Type", lsp.type)}
+        ${cell("Administrator", lsp.administrator)}
+        ${cell("Founded", lsp.founding_year)}
+        ${cell("Total Launches", lsp.total_launch_count)}
+        ${cell("Success Rate", lsp.total_launch_count ? `${(lsp.successful_launches/lsp.total_launch_count*100).toFixed(1)}% (${lsp.successful_launches}/${lsp.total_launch_count})` : "—")}
+      </div>
+      ${lsp.description ? `<div class="m-desc" style="margin-top:16px;color:var(--text-dim)">${escapeHTML(lsp.description)}</div>` : ""}
+    </div>
+
+    <div class="m-section">
+      <h3>LAUNCH ATTEMPT · 计数</h3>
+      <div class="m-grid">
+        ${cell("Orbital #", launch.orbital_launch_attempt_count)}
+        ${cell("This Year", launch.orbital_launch_attempt_count_year)}
+        ${cell("Pad #", launch.pad_launch_attempt_count)}
+        ${cell("Location #", launch.location_launch_attempt_count)}
+        ${cell("Agency #", launch.agency_launch_attempt_count)}
+        ${cell("Agency # (Year)", launch.agency_launch_attempt_count_year)}
+      </div>
+    </div>
+
+    <div class="m-section">
+      <h3>UPDATES · 发射动态</h3>
+      <div class="m-updates">${updatesHTML}</div>
+    </div>
+
+    <div class="m-section">
+      <h3>TIMELINE · 发射时序</h3>
+      <div class="m-timeline">${timelineHTML}</div>
+    </div>
+
+    <div class="m-section">
+      <h3>LINKS · 资料 / 直播</h3>
+      <div class="m-links">${linksHTML}</div>
+    </div>
+  `;
+
+  root.hidden = false;
+  document.body.style.overflow = "hidden";
+}
+
+function closeModal() {
+  const root = document.querySelector("#modalRoot");
+  root.hidden = true;
+  document.body.style.overflow = "";
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.matches("[data-close]")) closeModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.querySelector("#modalRoot").hidden) closeModal();
+});
+document.querySelector("#heroLink").addEventListener("click", (e) => {
+  e.preventDefault();
+  if (hero.launch) openModal(hero.launch);
+});
 
 /* =====================================================================
    EMPTY STATES
