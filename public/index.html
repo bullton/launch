@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ROCKET — Launch Tracker</title>
+  <meta name="description" content="实时全球火箭发射跟踪 / Real-time global rocket launch tracker" />
+  <link rel="preconnect" href="https://ll.thespacedevs.com" />
+  <link rel="preconnect" href="https://thespacedevs-prod.nyc3.digitaloceanspaces.com" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🚀%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#top">
+        <span class="brand-mark"></span>
+        <span class="brand-text">ROCKET</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#next">NEXT 下一发</a>
+        <a href="#upcoming">UPCOMING 即将发射</a>
+        <a href="#past">RECENT 最新完成</a>
+      </nav>
+      <div class="nav-actions">
+        <button id="fetchBtn" class="nav-btn" type="button" aria-label="Fetch launch data">
+          <span class="btn-spinner" aria-hidden="true"></span>
+          <span class="btn-label">FETCH DATA · 获取数据</span>
+        </button>
+        <span id="lastFetched" class="last-fetched"></span>
+      </div>
+    </div>
+    <div id="cacheHint" class="cache-hint"></div>
+  </header>
+
+  <main>
+    <section id="next" class="hero">
+      <div class="hero-bg" id="heroBg"></div>
+      <div class="hero-overlay"></div>
+      <div class="hero-content">
+        <div class="hero-eyebrow">
+          <span class="eyebrow-label">NEXT MISSION · 下一发任务</span>
+        </div>
+        <h1 id="heroName" class="hero-name">—</h1>
+        <div id="heroMeta" class="hero-meta">NO DATA LOADED · 点击右上 FETCH DATA 获取最新发射计划</div>
+        <div class="countdown" id="countdown" aria-live="polite">
+          <div class="cd-cell"><div class="cd-num" data-cd="d">--</div><div class="cd-lab">DAYS · 日</div></div>
+          <div class="cd-cell"><div class="cd-num" data-cd="h">--</div><div class="cd-lab">HOURS · 时</div></div>
+          <div class="cd-cell"><div class="cd-num" data-cd="m">--</div><div class="cd-lab">MIN · 分</div></div>
+          <div class="cd-cell"><div class="cd-num" data-cd="s">--</div><div class="cd-lab">SEC · 秒</div></div>
+        </div>
+        <div class="hero-foot">
+          <span id="heroNet" class="hero-net">NET —</span>
+          <a id="heroLink" href="#" target="_blank" rel="noopener" class="btn btn-ghost">MISSION DETAILS · 详情 →</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="upcoming" class="section">
+      <div class="section-head">
+        <div class="section-title">
+          <span class="section-kicker">01 · UPCOMING</span>
+          <h2>即将发射</h2>
+        </div>
+        <div class="section-counter" id="upcomingCount">— missions</div>
+      </div>
+      <div id="upcomingGrid" class="card-grid"></div>
+    </section>
+
+    <section id="past" class="section">
+      <div class="section-head">
+        <div class="section-title">
+          <span class="section-kicker">02 · RECENT</span>
+          <h2>已完成任务</h2>
+        </div>
+        <div class="section-counter" id="pastCount">— missions</div>
+      </div>
+      <div id="pastGrid" class="card-grid"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-left">
+        <span class="brand-mark"></span>
+        <span>ROCKET</span>
+      </div>
+      <div class="footer-mid">
+        Data via <a href="https://thespacedevs.com" target="_blank" rel="noopener">Launch Library 2</a> ·
+        本项目仅作技术演示
+      </div>
+      <div class="footer-right" id="lastUpdated">—</div>
+    </div>
+  </footer>
+
+  <template id="cardTpl">
+    <a class="card" target="_blank" rel="noopener">
+      <div class="card-img"></div>
+      <div class="card-body">
+        <div class="card-row">
+          <span class="status-badge"></span>
+          <span class="card-time"></span>
+        </div>
+        <div class="card-title"></div>
+        <div class="card-rocket"></div>
+        <div class="card-pad"></div>
+        <div class="card-cd" data-cd></div>
+      </div>
+    </a>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

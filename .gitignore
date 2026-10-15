@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+
+# SQLite data (generated at runtime, contains API cache)
+data/launches.db
+data/launches.db-shm
+data/launches.db-wal
+
+# environment
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+server.log
+server.err
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# test / coverage
+coverage/
+.nyc_output/
+
+# build output (if any)
+dist/
+build/
