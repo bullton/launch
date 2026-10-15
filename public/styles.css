@@ -864,6 +864,15 @@ button { font: inherit; cursor: pointer; }
   background: rgba(90,200,250,0.6);
   box-shadow: 0 0 3px rgba(90,200,250,0.4);
 }
+.tleg-band {
+  display: inline-block;
+  width: 20px;
+  height: 10px;
+  background: rgba(90,200,250,0.18);
+  border: 0.5px solid rgba(90,200,250,0.5);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
 .tleg-dist { color: var(--text-mute); }
 
 .m-link {

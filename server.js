@@ -247,7 +247,21 @@ app.get('/api/ll/past', (req, res) => {
 /* GET /api/ll/launch/:id — full launch record by id (or slug) */
 app.get('/api/ll/launch/:id', (req, res) => {
   const id = req.params.id;
-  const row = db.prepare('SELECT data FROM launches WHERE id=? OR slug=?').get(id, id);
+  let row;
+  try {
+    row = db.prepare('SELECT data FROM launches WHERE id=?').get(id);
+  } catch {
+    return res.status(404).json({ error: 'not found' });
+  }
+  if (!row) {
+    const all = db.prepare('SELECT data FROM launches').all();
+    for (const r of all) {
+      try {
+        const d = JSON.parse(r.data);
+        if (d.slug === id) { row = r; break; }
+      } catch { /* skip */ }
+    }
+  }
   if (!row) return res.status(404).json({ error: 'not found' });
   try { res.json(JSON.parse(row.data)); }
   catch { res.status(500).json({ error: 'corrupt data' }); }
