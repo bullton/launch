@@ -26,33 +26,72 @@ const STATUS_MAP = {
 };
 const statusOf = (st) => STATUS_MAP[st?.id] || { cls: "s-default", label: st?.abbrev || "—" };
 
-/* -------- formatters -------- */
+/* -------- timezone (toggle: UTC ↔ Asia/Shanghai UTC+8) -------- */
+let useBeijingTZ = (() => {
+  try { return localStorage.getItem("rocket:tz") === "bjt"; }
+  catch { return false; }
+})();
+let _tz = useBeijingTZ ? "Asia/Shanghai" : "UTC";
+const setTimezone = (useBjt) => {
+  useBeijingTZ = !!useBjt;
+  _tz = useBjt ? "Asia/Shanghai" : "UTC";
+  try { localStorage.setItem("rocket:tz", useBjt ? "bjt" : "utc"); } catch {}
+};
+
+/* extract calendar parts in a specific IANA timezone */
+function _partsInTZ(d, tz) {
+  const dtf = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+  const p = dtf.formatToParts(d);
+  const get = (t) => (p.find((x) => x.type === t) || {}).value || "00";
+  return {
+    year: get("year"), month: get("month"), day: get("day"),
+    hour: get("hour"), minute: get("minute"),
+  };
+}
+
+/* -------- formatters (TZ-aware) --------
+   Output examples:
+     UTC mode:    "2026-12-31 08:00 UTC" / "12/31 08:00Z" / "08:00 UTC"
+     Beijing:     "2027-01-01 16:00 CST" / "01/01 16:00+8" / "16:00 CST" */
+const pad2 = (n) => String(n).padStart(2, "0");
+
 const fmtUTC = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d)) return "—";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+  if (_tz === "UTC") {
+    return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
+  }
+  const p = _partsInTZ(d, "Asia/Shanghai");
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} CST`;
 };
+
 const fmtUTCShort = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d)) return "—";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`;
+  if (_tz === "UTC") {
+    return `${pad2(d.getUTCMonth() + 1)}/${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}Z`;
+  }
+  const p = _partsInTZ(d, "Asia/Shanghai");
+  return `${p.month}/${p.day} ${p.hour}:${p.minute}+8`;
 };
-const fmtLocal = (iso) => {
+
+const fmtLocal = fmtUTC;  /* legacy alias — same output under current TZ */
+
+const fmtUTCClock = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d)) return "—";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-const fmtUTCClock = (iso) => {
-  const d = new Date(iso);
-  if (isNaN(d)) return "—";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+  if (_tz === "UTC") {
+    return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
+  }
+  const p = _partsInTZ(d, "Asia/Shanghai");
+  return `${p.hour}:${p.minute} CST`;
 };
 const fmtAge = (ms) => {
   if (ms == null) return "—";
@@ -802,6 +841,10 @@ function showEmptyPast() {
 /* =====================================================================
    CACHE LOAD
    ===================================================================== */
+/* Last loaded cache — kept in memory so the TZ toggle can re-render
+   every time string in place without re-hitting the network. */
+let _lastCache = null;
+
 async function loadFromCache() {
   let res;
   try {
@@ -818,6 +861,7 @@ async function loadFromCache() {
   if (!res.ok) return false;
   const cache = await res.json();
   if (!cache.upcoming?.results || !cache.past?.results) return false;
+  _lastCache = cache;
   applyCache(cache);
   return true;
 }
@@ -889,7 +933,7 @@ function setBtnState(state) {
 function updateLastFetchedLabel() {
   const el = document.querySelector("#lastFetched");
   if (!lastFetchedAt) { el.classList.remove("visible"); el.textContent = ""; return; }
-  el.textContent = "AGE · " + fmtAge(Date.now() - lastFetchedAt.getTime());
+  el.textContent = `AGE · ${fmtAge(Date.now() - lastFetchedAt.getTime())} · ${fmtUTCClock(lastFetchedAt.toISOString())}`;
   el.classList.add("visible");
 }
 
@@ -912,6 +956,7 @@ async function handleFetch() {
       throw err;
     }
     const cache = await r.json();
+    _lastCache = cache;
     applyCache(cache);
     /* Hide any "DB empty" hint once refresh succeeded */
     document.querySelector("#cacheHint")?.classList.remove("visible");
@@ -957,10 +1002,39 @@ function startTicker() {
   }, 1000);
 }
 
+/* =====================================================================
+   TZ TOGGLE — UTC ↔ Beijing (Asia/Shanghai, UTC+8)
+   Re-renders every card and the hero by replaying the last cache load.
+   ===================================================================== */
+function syncTzButton() {
+  const btn = document.querySelector("#tzToggle");
+  if (!btn) return;
+  const lab = btn.querySelector(".tz-label");
+  if (lab) lab.textContent = useBeijingTZ ? "BJT" : "UTC";
+  btn.classList.toggle("on", useBeijingTZ);
+  btn.title = useBeijingTZ
+    ? "Current: Beijing Time (UTC+8) — click to switch to UTC"
+    : "Current: UTC — click to switch to Beijing Time (UTC+8)";
+}
+
+function rerenderForTz() {
+  /* If we have a last cache, replay applyCache to rewrite every time
+     string in the cards with the new TZ. The countdown ticker keeps
+     working unchanged (TZ-independent math). */
+  if (_lastCache) applyCache(_lastCache);
+  updateLastFetchedLabel();
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   showEmptyUpcoming();
   showEmptyPast();
   document.querySelector("#fetchBtn").addEventListener("click", handleFetch);
+  syncTzButton();
+  document.querySelector("#tzToggle")?.addEventListener("click", () => {
+    setTimezone(!useBeijingTZ);
+    syncTzButton();
+    rerenderForTz();
+  });
   startTicker();
 
   // Try loading cache from server (page refresh / new tab won't lose data)

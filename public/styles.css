@@ -157,6 +157,27 @@ button { font: inherit; cursor: pointer; }
 }
 .last-fetched.visible { opacity: 1; }
 
+/* TZ toggle — UTC ↔ BJT */
+.nav-tz {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line-2);
+  padding: 9px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.nav-tz:hover { color: #fff; border-color: #fff; }
+.nav-tz.on {
+  color: #000;
+  background: #fff;
+  border-color: #fff;
+}
+
 /* when DB has never been refreshed */
 .cache-hint {
   position: fixed;
