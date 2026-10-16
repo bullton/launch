@@ -27,6 +27,10 @@
         <button id="tzToggle" class="nav-tz" type="button" aria-label="Toggle timezone">
           <span class="tz-label">UTC</span>
         </button>
+        <button id="icsBtn" class="nav-ics" type="button" aria-label="Subscribe to calendar" title="Subscribe via iCal / 订阅日历">
+          <span class="ics-glyph" aria-hidden="true">📅</span>
+          <span class="ics-label">ICS</span>
+        </button>
         <button id="fetchBtn" class="nav-btn" type="button" aria-label="Fetch launch data">
           <span class="btn-spinner" aria-hidden="true"></span>
           <span class="btn-label">FETCH DATA · 获取数据</span>
@@ -118,6 +122,62 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <button class="modal-close" data-close aria-label="Close">×</button>
       <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <!-- ICS subscription modal -->
+  <div id="icsModal" class="modal-root" hidden>
+    <div class="modal-backdrop" data-close-ics></div>
+    <div class="modal ics-modal" role="dialog" aria-modal="true" aria-labelledby="icsTitle">
+      <button class="modal-close" data-close-ics aria-label="Close">×</button>
+      <div class="modal-body ics-body">
+        <h2 id="icsTitle">SUBSCRIBE · 订阅发射日历</h2>
+        <p class="ics-intro">
+          把下面这个链接添加到 Google Calendar / Apple Calendar / Outlook，
+          所有未来发射计划会自动同步到你的日历里，无需反复复制粘贴。
+        </p>
+
+        <div class="ics-url-box">
+          <input id="icsUrl" type="text" readonly value="(loading…)" />
+          <button id="icsCopyBtn" type="button">COPY</button>
+        </div>
+        <div class="ics-meta">
+          <span>FORMAT: <b>iCalendar (RFC 5545)</b></span>
+          <span>UPDATES: <b>every 6-12 h</b> (Google Calendar poll)</span>
+          <span>EVENTS: <b id="icsCount">—</b></span>
+        </div>
+
+        <div class="ics-steps">
+          <div class="ics-step">
+            <h3>Google Calendar</h3>
+            <ol>
+              <li>打开 <a href="https://calendar.google.com" target="_blank" rel="noopener">Google Calendar</a></li>
+              <li>右上 ⚙ → <b>Settings</b> → 左栏 <b>Add calendar</b> → <b>From URL</b></li>
+              <li>粘贴上面的 URL → <b>Add calendar</b></li>
+            </ol>
+          </div>
+          <div class="ics-step">
+            <h3>Apple Calendar (iOS / macOS)</h3>
+            <ol>
+              <li><b>macOS</b>: 系统设置 → Internet Accounts → Add Account → Other → Add CalDAV Account</li>
+              <li><b>iOS</b>: Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar</li>
+              <li>Account Type 选 <b>Manual</b>，粘贴 URL</li>
+            </ol>
+          </div>
+          <div class="ics-step">
+            <h3>Outlook</h3>
+            <ol>
+              <li>Add calendar → Subscribe from web</li>
+              <li>粘贴 URL</li>
+            </ol>
+          </div>
+        </div>
+
+        <details class="ics-direct">
+          <summary>直接下载 .ics 文件（不订阅）</summary>
+          <p>想一次性导入而不是订阅：<a id="icsDirectLink" href="/api/ll/calendar.ics" target="_blank" rel="noopener">点此下载 rocket-launches.ics</a></p>
+        </details>
+      </div>
     </div>
   </div>
 

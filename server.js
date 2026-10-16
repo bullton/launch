@@ -177,8 +177,9 @@ async function refresh() {
   dbMod.setState(db, 'last_refresh',     Date.now());
   dbMod.setState(db, 'upcoming_count',    upcoming.count);
   dbMod.setState(db, 'past_count',        past.count);
+  invalidateIcsCache();
   const meta = dbMod.getCacheMeta(db);
-  console.log(`  ✓ DB refreshed · upcoming=${upcoming.count}, past=${past.count}, total=${meta.totalRows}`);
+  console.log(`  ✓ DB refreshed · upcoming=${upcoming.count}, past=${past.count}, total=${meta.totalRows} (ICS cache invalidated)`);
   return true;
 }
 
@@ -297,6 +298,133 @@ app.get('/api/ll/health', (req, res) => {
     totalRows:   m.totalRows,
     serverTime:  new Date().toISOString(),
   });
+});
+
+/* ────────  ICS (iCalendar / RFC 5545) feed  ────────
+   Subscribable by Google Calendar, Apple Calendar, Outlook, etc.
+   Each VEVENT = one future launch (next ~200).  The feed is
+   regenerated on every refresh() (cache invalidated), so calendar
+   clients see updates within their polling window (Google: ~6-12h). */
+const ICS_HOST_TAG = (process.env.ICS_HOST || "rocket-tracker").replace(/[^a-z0-9.-]/gi, "");
+let _icsCache = null;        // { body, ts }
+let _icsCacheAt = 0;
+const ICS_TTL_MS = 5 * 60 * 1000;  // 5 min soft TTL; invalidated on refresh
+
+function _icsEscape(s) {
+  return String(s ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
+}
+function _icsFold(line) {
+  /* RFC 5545 §3.1: lines > 75 octets must be folded with CRLF + space */
+  if (Buffer.byteLength(line, "utf8") <= 75) return line;
+  const out = [];
+  let buf = "";
+  for (const ch of line) {
+    const test = buf + ch;
+    if (Buffer.byteLength(test, "utf8") > 74) { out.push(buf); buf = " " + ch; }
+    else buf = test;
+  }
+  if (buf) out.push(buf);
+  return out.join("\r\n");
+}
+function _icsDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`;
+}
+const STATUS_ICS = {
+  1: "CONFIRMED", 2: "TENTATIVE", 3: "CANCELLED", 4: "CANCELLED",
+  5: "TENTATIVE", 6: "CONFIRMED", 7: "CANCELLED", 8: "TENTATIVE",
+};
+
+function _vEvent(launch) {
+  const net = _icsDate(launch.net);
+  if (!net) return null;
+  const end = _icsDate(launch.window_end)
+           || _icsDate(new Date(new Date(launch.net).getTime() + 60*60*1000).toISOString());
+  const stamp = _icsDate(new Date().toISOString());
+  const lsp    = launch.launch_service_provider?.name || "";
+  const rocket = launch.rocket?.configuration?.full_name || "";
+  const orbit  = launch.mission?.orbit?.name || "";
+  const pad    = launch.pad?.name || "";
+  const loc    = launch.pad?.location?.name || "";
+  const desc   = [
+    `Provider: ${lsp}`,
+    `Rocket: ${rocket}`,
+    `Orbit: ${orbit}`,
+    launch.flightclub_url ? `3D: ${launch.flightclub_url}` : null,
+    launch.url ? `Details: ${launch.url}` : null,
+  ].filter(Boolean).join("\n");
+
+  const lines = [
+    "BEGIN:VEVENT",
+    `UID:${launch.id}@${ICS_HOST_TAG}`,
+    `DTSTAMP:${stamp}`,
+    `DTSTART:${net}`,
+    `DTEND:${end}`,
+    `SUMMARY:${_icsEscape(launch.name || "Rocket Launch")}`,
+    `DESCRIPTION:${_icsEscape(desc)}`,
+    `LOCATION:${_icsEscape([pad, loc].filter(Boolean).join(", "))}`,
+    `STATUS:${STATUS_ICS[launch.status?.id] || "TENTATIVE"}`,
+  ];
+  const lat = parseFloat(launch.pad?.latitude);
+  const lon = parseFloat(launch.pad?.longitude);
+  if (Number.isFinite(lat) && Number.isFinite(lon)) lines.push(`GEO:${lat.toFixed(4)};${lon.toFixed(4)}`);
+  if (launch.url) lines.push(`URL:${_icsEscape(launch.url)}`);
+  lines.push("END:VEVENT");
+  return lines.map(_icsFold).join("\r\n");
+}
+
+function buildIcs() {
+  const nowISO = new Date().toISOString();
+  const upcoming = dbMod.getUpcoming(db, 200, nowISO);
+  const events = upcoming.map(_vEvent).filter(Boolean);
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    `PRODID:-//${ICS_HOST_TAG}//launches//EN`,
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:Rocket Launches",
+    "X-WR-TIMEZONE:UTC",
+    "X-PUBLISHED-TTL:PT6H",
+    "X-WR-CALDESC:Upcoming rocket launches (Launch Library 2)",
+  ];
+  for (const ev of events) lines.push(ev);
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n") + "\r\n";
+}
+
+function getIcsBody() {
+  const now = Date.now();
+  if (_icsCache && now - _icsCacheAt < ICS_TTL_MS) return _icsCache;
+  _icsCache = buildIcs();
+  _icsCacheAt = now;
+  return _icsCache;
+}
+function invalidateIcsCache() { _icsCache = null; _icsCacheAt = 0; }
+
+/* Expose a hint to clients so the UI can build the right subscribe URL */
+app.get('/api/ll/feed-info', (req, res) => {
+  res.json({
+    icsUrl: `${req.protocol}://${req.get("host")}/api/ll/calendar.ics`,
+    ttl:    "PT6H",
+  });
+});
+
+/* GET /api/ll/calendar.ics — iCalendar feed */
+app.get("/api/ll/calendar.ics", (req, res) => {
+  const body = getIcsBody();
+  res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+  res.setHeader("Content-Disposition", 'inline; filename="rocket-launches.ics"');
+  /* Google Calendar uses Last-Modified for efficient re-polling */
+  res.setHeader("Cache-Control", "public, max-age=21600, stale-while-revalidate=60");
+  res.send(body);
 });
 
 /* ────────  startup banner  ──────── */

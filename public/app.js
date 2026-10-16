@@ -802,14 +802,86 @@ function closeModal() {
 
 document.addEventListener("click", (e) => {
   if (e.target.matches("[data-close]")) closeModal();
+  if (e.target.matches("[data-close-ics]")) closeIcsModal();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !document.querySelector("#modalRoot").hidden) closeModal();
+  if (e.key !== "Escape") return;
+  if (!document.querySelector("#modalRoot").hidden) closeModal();
+  if (!document.querySelector("#icsModal").hidden) closeIcsModal();
 });
 document.querySelector("#heroLink").addEventListener("click", (e) => {
   e.preventDefault();
   if (hero.launch) openModal(hero.launch);
 });
+
+/* =====================================================================
+   ICS SUBSCRIPTION MODAL
+   ===================================================================== */
+function openIcsModal() {
+  const urlInput = document.querySelector("#icsUrl");
+  const direct   = document.querySelector("#icsDirectLink");
+  const countEl  = document.querySelector("#icsCount");
+  /* prefer the live URL the server reports (handles proxied hostnames) */
+  fetch(`${API}/feed-info`)
+    .then((r) => r.ok ? r.json() : null)
+    .then((info) => {
+      if (info?.icsUrl) {
+        urlInput.value = info.icsUrl;
+        if (direct) direct.href = info.icsUrl;
+      } else {
+        const u = `${location.origin}/api/ll/calendar.ics`;
+        urlInput.value = u;
+        if (direct) direct.href = u;
+      }
+    })
+    .catch(() => {
+      const u = `${location.origin}/api/ll/calendar.ics`;
+      urlInput.value = u;
+      if (direct) direct.href = u;
+    });
+  /* count events by HEAD-fetching the ICS and counting BEGIN:VEVENT */
+  if (countEl) {
+    countEl.textContent = "…";
+    fetch(`${API}/ll/calendar.ics`, { method: "GET" })
+      .then((r) => r.text())
+      .then((txt) => {
+        const n = (txt.match(/^BEGIN:VEVENT/gm) || []).length;
+        countEl.textContent = `${n} upcoming`;
+      })
+      .catch(() => { countEl.textContent = "—"; });
+  }
+  const root = document.querySelector("#icsModal");
+  root.hidden = false;
+  document.body.style.overflow = "hidden";
+  setTimeout(() => urlInput.select(), 60);
+}
+function closeIcsModal() {
+  const root = document.querySelector("#icsModal");
+  if (!root || root.hidden) return;
+  root.hidden = true;
+  if (document.querySelector("#modalRoot").hidden) {
+    document.body.style.overflow = "";
+  }
+}
+async function copyIcsUrl(btn) {
+  const input = document.querySelector("#icsUrl");
+  if (!input) return;
+  const url = input.value;
+  let ok = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      ok = true;
+    } else {
+      input.select();
+      ok = document.execCommand && document.execCommand("copy");
+    }
+  } catch { ok = false; }
+  const old = btn.textContent;
+  btn.textContent = ok ? "COPIED ✓" : "PRESS Ctrl+C";
+  btn.classList.toggle("copied", ok);
+  setTimeout(() => { btn.textContent = old; btn.classList.remove("copied"); }, 1600);
+}
 
 /* =====================================================================
    EMPTY STATES
@@ -1028,6 +1100,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   showEmptyUpcoming();
   showEmptyPast();
   document.querySelector("#fetchBtn").addEventListener("click", handleFetch);
+  document.querySelector("#icsBtn")?.addEventListener("click", openIcsModal);
+  document.querySelector("#icsCopyBtn")?.addEventListener("click", (e) => copyIcsUrl(e.currentTarget));
   syncTzButton();
   document.querySelector("#tzToggle")?.addEventListener("click", () => {
     setTimezone(!useBeijingTZ);
