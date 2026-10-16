@@ -16,6 +16,9 @@ data/launches.db-wal
 server.log
 server.err
 
+# test artifacts
+upcoming_launches.json
+
 # OS
 .DS_Store
 Thumbs.db

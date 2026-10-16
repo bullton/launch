@@ -839,6 +839,24 @@ button { font: inherit; cursor: pointer; }
   letter-spacing: 0.12em;
   color: var(--text-dim);
 }
+.m-trajectory-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+.m-trajectory-stats b {
+  color: #fff;
+  font-weight: 500;
+  margin-left: 4px;
+}
 .tleg-item {
   display: flex;
   align-items: center;
@@ -852,6 +870,8 @@ button { font: inherit; cursor: pointer; }
 }
 .tleg-dot.launch  { background: #4cd964; }
 .tleg-dot.landing { background: #ff9f0a; }
+.tleg-dot.fairing { background: #5ac8fa; }
+.tleg-dot.event   { background: #fff; }
 .tleg-line {
   display: inline-block;
   width: 20px;
@@ -859,6 +879,10 @@ button { font: inherit; cursor: pointer; }
   background: rgba(90,200,250,0.7);
   border-radius: 1px;
   flex-shrink: 0;
+}
+.tleg-line.active {
+  background: rgba(255,159,10,0.85);
+  box-shadow: 0 0 3px rgba(255,159,10,0.4);
 }
 .tleg-line.orbit {
   background: rgba(90,200,250,0.6);
@@ -874,6 +898,28 @@ button { font: inherit; cursor: pointer; }
   flex-shrink: 0;
 }
 .tleg-dist { color: var(--text-mute); }
+
+.m-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.m-event {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+.m-event .t { color: var(--hold); }
+.m-event .n { color: #fff; }
 
 .m-link {
   font-family: var(--font-mono);

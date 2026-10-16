@@ -316,95 +316,7 @@ function openModal(launch) {
   };
   const landZone = LANDING_ZONES[stageLandingLoc.name] || null;
 
-  /* ── launch azimuth from orbit type + pad lat ── */
-  function launchAzimuth(padLat, orbitName) {
-    const lat = Math.abs(padLat);
-    const name = (orbitName || '').toLowerCase();
-    if (name.includes('polar') || name.includes('sso')) return padLat >= 0 ? 180 : 0;
-    if (name.includes('equator') || name.includes('geo') || name.includes('gto')) return 95;
-    if (name.includes('iss') || name.includes('station')) return lat < 30 ? 45 : 35;
-    if (name.includes('leo') || name.includes('low earth')) {
-      /* initial flight azimuth (safety corridor, before any dogleg).
-         Calibrated against Shenzhou / Long March ground tracks which
-         typically run ESE to reach Pacific tracking ships. */
-      if (lat < 25) return 60;
-      if (lat < 35) return 80;
-      return 115;
-    }
-    return 110;
-  }
-
-  /* ── rhumb line endpoint (constant bearing — appears as straight line on Mercator) ── */
-  function rhumbEndpoint(lat1, lon1, bearing, distKm) {
-    const R = 6371;
-    const toRad = (d) => d * Math.PI / 180;
-    const toDeg = (r) => r * 180 / Math.PI;
-    const δ = distKm / R;
-    const φ1 = toRad(lat1), λ1 = toRad(lon1), θ = toRad(bearing);
-    const Δφ = δ * Math.cos(θ);
-    const φ2 = φ1 + Δφ;
-    const Δψ = Math.log(Math.tan(Math.PI/4 + φ2/2) / Math.tan(Math.PI/4 + φ1/2));
-    const q = Math.abs(Δψ) > 1e-10 ? Δφ / Δψ : Math.cos(φ1);
-    const Δλ = δ * Math.sin(θ) / q;
-    return [toDeg(φ2), lon1 + toDeg(Δλ)];
-  }
-
-  /* ── interpolate a 2-point line into N points ── */
-  function interpolateLine(line, steps) {
-    const pts = [];
-    for (let i = 0; i <= steps; i++) {
-      const f = i / steps;
-      pts.push([
-        line[0][0] + (line[1][0] - line[0][0]) * f,
-        line[0][1] + (line[1][1] - line[0][1]) * f,
-      ]);
-    }
-    return pts;
-  }
-
-  /* ── observation band: visibility range based on flight altitude ──
-     Visibility d ≈ √(2·R·h), where R = 6371km, h = altitude.
-     100km altitude → ~1100km visible
-     400km altitude → ~2200km visible
-     Width grows from 0 to max over the first 30% of trajectory (ascent), then constant. */
-  function observationBand(line, maxWidthKm) {
-    if (!line || line.length < 2) return null;
-    const pts = line.length > 2 ? line : interpolateLine(line, 24);
-    const N = pts.length;
-    const left = [], right = [];
-    for (let i = 0; i < N; i++) {
-      const [lat, lon] = pts[i];
-      const bearing = (i < N - 1)
-        ? azimuthBetween(lat, lon, pts[i+1][0], pts[i+1][1])
-        : azimuthBetween(pts[i-1][0], pts[i-1][1], lat, lon);
-      const f = i / (N - 1);
-      /* ramp: 0 → maxWidth over first 30% of trajectory, then constant */
-      const width = maxWidthKm * Math.min(1, f / 0.3);
-      const halfWidth = width / 2;
-      const [lLat, lLon] = rhumbEndpoint(lat, lon, (bearing - 90 + 360) % 360, halfWidth);
-      const [rLat, rLon] = rhumbEndpoint(lat, lon, (bearing + 90) % 360, halfWidth);
-      left.push([lLat, lLon]);
-      right.push([rLat, rLon]);
-    }
-    return [...left, ...right.reverse()];
-  }
-
-  /* ── endpoint along azimuth + distance ── */
-  function pointAlongAzimuth(lat, lon, az, distKm) {
-    const R = 6371;
-    const toRad = (d) => d * Math.PI / 180;
-    const toDeg = (r) => r * 180 / Math.PI;
-    const phi = toRad(lat), lam = toRad(lon), theta = toRad(az);
-    const d = distKm / R;
-    const phi2 = Math.asin(Math.sin(phi) * Math.cos(d) + Math.cos(phi) * Math.sin(d) * Math.cos(theta));
-    const lam2 = toDeg(lam + Math.atan2(
-      Math.sin(theta) * Math.sin(d) * Math.cos(phi),
-      Math.cos(d) - Math.sin(phi) * Math.sin(phi2)
-    ));
-    return [toDeg(phi2), lam2];
-  }
-
-  /* ── azimuth from point A to point B ── */
+  /* ── azimuth from point A to point B (utility for observation band) ── */
   function azimuthBetween(lat1, lon1, lat2, lon2) {
     const toRad = (d) => d * Math.PI / 180;
     const toDeg = (r) => r * 180 / Math.PI;
@@ -416,39 +328,124 @@ function openModal(launch) {
     return (toDeg(Math.atan2(y, x)) + 360) % 360;
   }
 
-  /* ── orbit name → payload extend distance (km) ── */
-  function orbitExtendKm(orbitName) {
-    const n = (orbitName || '').toLowerCase();
-    if (n.includes('polar') || n.includes('sso') || n.includes('ssO')) return 2500;
-    if (n.includes('gto') || n.includes('geo') || n.includes('transfer')) return 12000;
-    if (n.includes('leo') || n.includes('iss') || n.includes('station')) return 5000;
-    if (n.includes('moon') || n.includes('lunar') || n.includes('trans-lunar')) return 400000;
-    return 5000;
+  /* ── rhumb-line endpoint (constant-bearing great-circle approximation) ── */
+  function rhumbEndpoint(lat1, lon1, bearing, distKm) {
+    const R = 6371;
+    const toRad = (d) => d * Math.PI / 180;
+    const toDeg = (r) => r * 180 / Math.PI;
+    const d   = distKm / R;
+    const p1  = toRad(lat1), l1 = toRad(lon1), th = toRad(bearing);
+    const dp  = d * Math.cos(th);
+    const p2  = p1 + dp;
+    const dps = Math.log(Math.tan(Math.PI/4 + p2/2) / Math.tan(Math.PI/4 + p1/2));
+    const q   = Math.abs(dps) > 1e-10 ? dp / dps : Math.cos(p1);
+    const dl  = d * Math.sin(th) / q;
+    return [toDeg(p2), lon1 + toDeg(dl)];
   }
 
+  /* ── observation band: visibility range based on flight altitude ──
+     Physical model: an observer at sea level can see a target at altitude h
+     up to the horizon distance d = √(2·R·h).  We apply the standard 4/3·R
+     atmospheric-refraction correction (k-factor), giving roughly 1.15× the
+     geometric horizon.  The band is the strip 2d wide, centered on the
+     ground track; capped at maxWidthKm for UI sanity (real ISS-horizon
+     is ~2600 km). */
+  const OBSERVATION_R = 6371;                    // Earth mean radius (km)
+  const OBSERVATION_K = 4 / 3;                   // standard refraction k-factor
+  const OBSERVATION_CAP_KM = 2200;               // UI cap (≈ ISS horizon)
+  function observationBand(pts, maxWidthKm = OBSERVATION_CAP_KM) {
+    if (!pts || pts.length < 2) return null;
+    const cap = Math.min(maxWidthKm, OBSERVATION_CAP_KM);
+    const N = pts.length;
+    const left = [], right = [];
+    for (let i = 0; i < N; i++) {
+      const [lat, lon, alt] = pts[i];
+      const bearing = (i < N - 1)
+        ? azimuthBetween(lat, lon, pts[i+1][0], pts[i+1][1])
+        : azimuthBetween(pts[i-1][0], pts[i-1][1], lat, lon);
+      /* horizon distance with standard atmospheric refraction */
+      const h = Math.max(0, alt || 0);
+      const dHorizon = h > 0 ? Math.sqrt(2 * OBSERVATION_K * OBSERVATION_R * h) : 0;
+      /* width = 2·dHorizon, capped */
+      const width = Math.min(cap, 2 * dHorizon);
+      const halfW = width / 2;
+      if (halfW < 1) {
+        /* skip degenerate points (still on the pad) to avoid noisy band */
+        const last = left.length ? left[left.length - 1] : [lat, lon];
+        left.push(last);
+        right.push(last);
+        continue;
+      }
+      const [lLat, lLon] = rhumbEndpoint(lat, lon, (bearing - 90 + 360) % 360, halfW);
+      const [rLat, rLon] = rhumbEndpoint(lat, lon, (bearing + 90) % 360, halfW);
+      left.push([lLat, lLon]);
+      right.push([rLat, rLon]);
+    }
+    return [...left, ...right.reverse()];
+  }
+
+  /* =====================================================================
+     Build trajectory with the physics-based engine.
+     Replaces the old heuristic `launchAzimuth` + straight rhumb line.
+     ===================================================================== */
   const padLat = parseFloat(pad.latitude);
   const padLon = parseFloat(pad.longitude);
   const orbitName = orbit.name || '';
-  const az = launchAzimuth(padLat, orbitName);
-  const downrange = stageLanding.downrange_distance || 0;
 
-  /* ── primary: booster landing trajectory (only if we have landing data) ──
-     straight line on Mercator (rhumb line from launch to landing zone) */
   let trajLine = null, trajEndpoint = null;
-  if (!isNaN(padLat) && !isNaN(padLon) && landZone) {
-    trajEndpoint = [landZone.lat, landZone.lon];
-    trajLine = [[padLat, padLon], trajEndpoint];
-  } else if (!isNaN(padLat) && !isNaN(padLon) && downrange > 0) {
-    trajEndpoint = rhumbEndpoint(padLat, padLon, az, downrange);
-    trajLine = [[padLat, padLon], trajEndpoint];
-  }
-
-  /* ── payload orbit direction: always draw, straight line from launch along azimuth ── */
   let orbitLine = null, orbitEndpoint = null;
+  let engResult = null;
+  let trajectoryPts = null;     // [[lat, lon, alt], ...] for band
+  let dropZones = [];          // [{ lat, lon, label, sep_time_s }]
+  let flightEvents = [];       // [{ lat, lon, label, t }]
+  let az = null;                // ground-effective azimuth in degrees
+
   if (!isNaN(padLat) && !isNaN(padLon)) {
-    const extendKm = orbitExtendKm(orbitName);
-    orbitEndpoint = rhumbEndpoint(padLat, padLon, az, extendKm);
-    orbitLine = [[padLat, padLon], orbitEndpoint];
+    try {
+      engResult = GlobalLaunchTrajectoryEngine.generatePrediction(launch, 600, 30);
+      az = engResult.metadata.azimuth_ground_eff_deg;
+
+      /* ground-track polyline from engine's kinematic trajectory */
+      trajLine = engResult.trajectory.map((p) => [p.lat, p.lon]);
+      trajEndpoint = trajLine[trajLine.length - 1];
+
+      /* rich point array (with altitude) for the observation band */
+      trajectoryPts = engResult.trajectory.map((p) => [p.lat, p.lon, p.alt_km]);
+
+      /* draw the orbit-insertion line out to a reasonable endpoint:
+         if the trajectory already reaches insertion we use its last point;
+         otherwise extend along the inertial azimuth. */
+      const lastT = engResult.trajectory[engResult.trajectory.length - 1];
+      if (lastT && lastT.range_km > 100) {
+        orbitLine = trajLine;
+        orbitEndpoint = trajEndpoint;
+      }
+
+      /* drop zones (booster, fairing, side boosters, ...) */
+      dropZones = engResult.drop_zones.map((d) => ({
+        lat: d.drop_lat, lon: d.drop_lon,
+        label: d.stage, sep_time_s: d.sep_time_s,
+      }));
+
+      /* flight events (Liftoff, Max-Q, MECO, Fairing, SECO, ...) */
+      flightEvents = engResult.events.map((e) => ({
+        lat: e.lat, lon: e.lon, label: e.event, t: e.t,
+      }));
+
+      /* ── If the launch record carries a real landing location, prefer it
+            over the engine's estimated booster drop point. The engine value
+            is a generic physical approximation; LL2 data is telemetry. */
+      if (landZone && dropZones.length > 0) {
+        dropZones[0] = {
+          ...dropZones[0],
+          lat: landZone.lat, lon: landZone.lon,
+          label: `Booster · ${landZone.name || "Landing"}`,
+          isReal: true,
+        };
+      }
+    } catch (err) {
+      console.warn('trajectory engine failed:', err);
+    }
   }
 
   const mapId = `traj-map-${Date.now()}`;
@@ -588,17 +585,32 @@ function openModal(launch) {
 
     ${stageHTML}
 
-    ${orbitLine ? `
+    ${trajLine ? `
     <div class="m-section">
       <h3>TRAJECTORY · 轨迹预报</h3>
+      <div class="m-trajectory-stats">
+        <span>INC <b>${engResult ? engResult.metadata.inclination_deg.toFixed(2) : "—"}°</b></span>
+        <span>AZ <b>${az != null ? az.toFixed(2) : "—"}°</b></span>
+        <span>DIR <b>${engResult ? (engResult.metadata.launch_southward ? "SOUTH" : "NORTH") : "—"}</b></span>
+        <span>PROFILE <b>${engResult ? engResult.metadata.profile_type.replace("_", " ") : "—"}</b></span>
+        <span>ROCKET <b>${escapeHTML(engResult ? engResult.metadata.rocket_name : (cfg.full_name || "—"))}</b></span>
+      </div>
       <div id="${mapId}" class="m-map"></div>
       <div class="m-trajectory-legend">
         <span class="tleg-item"><span class="tleg-dot launch"></span>Launch · ${escapeHTML(pad.name || "—")}</span>
-        ${trajEndpoint ? `<span class="tleg-item"><span class="tleg-dot landing"></span>Booster · ${escapeHTML(stageLandingLoc.name || "—")}${downrange > 0 ? ` · ${downrange} km` : ''}</span>` : ""}
-        <span class="tleg-item"><span class="tleg-line orbit"></span>Payload · ${escapeHTML(orbit.name || "—")}</span>
-        <span class="tleg-item"><span class="tleg-band"></span>Visible region · 可观察范围</span>
-        <span class="tleg-item tleg-az">Azimuth ${Math.round(az)}°</span>
+        <span class="tleg-item"><span class="tleg-line active"></span>Ascent 主动段</span>
+        <span class="tleg-item"><span class="tleg-line orbit"></span>Orbit 入轨段</span>
+        ${dropZones.length ? dropZones.map((d, i) => {
+          const cls = i === 0 ? "landing" : "fairing";
+          return `<span class="tleg-item"><span class="tleg-dot ${cls}"></span>${escapeHTML(d.label)}</span>`;
+        }).join("") : ""}
+        ${flightEvents.length ? `<span class="tleg-item"><span class="tleg-dot event"></span>${flightEvents.length} Events</span>` : ""}
+        <span class="tleg-item"><span class="tleg-band"></span>Visible region</span>
       </div>
+      ${flightEvents.length ? `
+      <div class="m-events">
+        ${flightEvents.map(e => `<div class="m-event"><span class="t">T+${e.t}s</span><span class="n">${escapeHTML(e.label)}</span></div>`).join("")}
+      </div>` : ""}
     </div>` : ""}
 
     <div class="m-section">
@@ -646,7 +658,7 @@ function openModal(launch) {
   document.body.style.overflow = "hidden";
 
   /* initialize Leaflet map after DOM is visible */
-  if (orbitLine) {
+  if (trajLine) {
     const mapEl = document.getElementById(mapId);
     if (mapEl) {
       const map = L.map(mapId, {
@@ -665,26 +677,11 @@ function openModal(launch) {
       L.circleMarker([padLat, padLon], {
         radius: 7, color: '#4cd964', fillColor: '#4cd964',
         fillOpacity: 1, weight: 2,
-      }).addTo(map).bindPopup(`Launch · ${pad.name}`);
+      }).addTo(map).bindPopup(`Launch · ${escapeHTML(pad.name || "—")}`);
 
-      /* booster landing line + marker */
-      if (trajLine && trajEndpoint) {
-        L.polyline(trajLine, {
-          color: 'rgba(255,159,10,0.55)',
-          weight: 2.5,
-          dashArray: '6 5',
-          lineCap: 'round',
-        }).addTo(map);
-        L.circleMarker(trajEndpoint, {
-          radius: 6, color: '#ff9f0a', fillColor: '#ff9f0a',
-          fillOpacity: 1, weight: 2,
-        }).addTo(map).bindPopup(`Booster · ${escapeHTML(stageLandingLoc.name || 'TBD')}`);
-      }
-
-      /* payload orbit line + marker (always draw) */
-      if (orbitLine && orbitEndpoint) {
-        /* observation band — visibility range based on flight altitude */
-        const band = observationBand(orbitLine, 2000);
+      /* observation band along the engine's kinematic trajectory (uses real altitude) */
+      if (trajectoryPts && trajectoryPts.length > 1) {
+        const band = observationBand(trajectoryPts, 2000);
         if (band) {
           L.polygon(band, {
             color: 'rgba(90,200,250,0.45)',
@@ -694,21 +691,61 @@ function openModal(launch) {
             smoothFactor: 1.5,
           }).addTo(map).bindPopup('Visible region · 大致可观察范围');
         }
-
-        L.polyline(orbitLine, {
-          color: 'rgba(90,200,250,0.6)',
-          weight: 2,
-          dashArray: '10 4',
-          lineCap: 'round',
-        }).addTo(map);
-        L.circleMarker(orbitEndpoint, {
-          radius: 5, color: '#5ac8fa', fillColor: '#5ac8fa',
-          fillOpacity: 0.8, weight: 1.5,
-        }).addTo(map).bindPopup(`Orbit · ${escapeHTML(orbit.name || '—')}`);
       }
 
-      /* fit bounds to show entire trajectory (orbit always extends furthest) */
-      const bounds = L.latLngBounds(orbitLine.map(([la, lo]) => [la, lo]));
+      /* engine trajectory polyline — color by flight phase (active vs orbit) */
+      if (trajLine && trajLine.length > 1) {
+        const splitIdx = engResult
+          ? engResult.trajectory.findIndex((p) => p.phase === "ORBIT")
+          : -1;
+        const activeSeg  = splitIdx > 0 ? trajLine.slice(0, splitIdx + 1) : trajLine;
+        const orbitSeg   = splitIdx > 0 ? trajLine.slice(splitIdx)       : null;
+
+        L.polyline(activeSeg, {
+          color: 'rgba(255,159,10,0.85)',
+          weight: 2.5,
+          lineCap: 'round',
+        }).addTo(map);
+
+        if (orbitSeg && orbitSeg.length > 1) {
+          L.polyline(orbitSeg, {
+            color: 'rgba(90,200,250,0.65)',
+            weight: 2,
+            dashArray: '8 4',
+            lineCap: 'round',
+          }).addTo(map);
+        }
+      }
+
+      /* flight event markers (Liftoff, Max-Q, MECO, Fairing, SECO, …) */
+      flightEvents.forEach((ev) => {
+        if (ev.label === "Liftoff") return;             // already drawn as green launch marker
+        L.circleMarker([ev.lat, ev.lon], {
+          radius: 4, color: '#ffffff', fillColor: '#888',
+          fillOpacity: 0.8, weight: 1,
+        }).addTo(map).bindPopup(
+          `<b>${escapeHTML(ev.label)}</b><br/>T+${ev.t}s`
+        );
+      });
+
+      /* drop zone markers (booster, fairing, side boosters) */
+      dropZones.forEach((d, i) => {
+        if (d.lat == null || d.lon == null) return;
+        const isFirst = i === 0;
+        const color = isFirst ? '#ff9f0a' : '#5ac8fa';
+        L.circleMarker([d.lat, d.lon], {
+          radius: 6, color, fillColor: color,
+          fillOpacity: 0.85, weight: 2,
+        }).addTo(map).bindPopup(`<b>${escapeHTML(d.label)}</b><br/>T+${d.sep_time_s}s`);
+      });
+
+      /* fit bounds to all visible geometry */
+      const allPts = [
+        [padLat, padLon],
+        ...trajLine,
+        ...dropZones.filter((d) => d.lat != null).map((d) => [d.lat, d.lon]),
+      ];
+      const bounds = L.latLngBounds(allPts);
       map.fitBounds(bounds, { padding: [28, 28] });
 
       /* Leaflet needs invalidateSize when container was hidden — give browser time to reflow */
