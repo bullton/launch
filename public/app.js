@@ -104,7 +104,6 @@ const fmtAge = (ms) => {
   const d = Math.floor(h / 24);
   return `${d}d ${h % 24}h ago`;
 };
-const pad2 = (n) => String(n).padStart(2, "0");
 
 function countdownParts(targetDate, now = new Date()) {
   let diff = Math.floor((targetDate - now) / 1000);
