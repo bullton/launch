@@ -1,12 +1,14 @@
 /* =====================================================================
    ROCKET — Launch Tracker
-   Data: SQLite cache served by this server, refreshed in the background
-         from Launch Library 2 (https://thespacedevs.com)
+   Data: SQLite cache served by this server, sourced from
+         Launch Library 2 (https://thespacedevs.com)
 
    Flow:
-     • Page load       → GET  /api/ll/cache   (read DB, no upstream)
+     • Page load       → GET  /api/ll/cache   (read DB, zero upstream)
      • Manual refresh  → POST /api/ll/refresh  (force upstream fetch)
-     • Background      → server refreshes DB every REFRESH_INTERVAL_MS
+     • No background   → refreshes are 100% button-driven, no setInterval
+                         in server.js. This keeps request count minimal
+                         and avoids upstream 429 throttling.
    ===================================================================== */
 
 const API = "/api/ll";
@@ -899,21 +901,43 @@ async function handleFetch() {
   setBtnState("loading");
   try {
     const r = await fetch(`${API}/refresh`, { method: "POST" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) {
+      /* server returns { error, detail, retryAfter } for 429/502 — read body */
+      let body = {};
+      try { body = await r.json(); } catch { body = { detail: await r.text().catch(() => r.statusText) }; }
+      const err = new Error(body.detail || body.error || `HTTP ${r.status}`);
+      err.status     = r.status;
+      err.retryAfter = body.retryAfter || null;
+      err.errorLabel = body.error      || null;
+      throw err;
+    }
     const cache = await r.json();
     applyCache(cache);
     /* Hide any "DB empty" hint once refresh succeeded */
     document.querySelector("#cacheHint")?.classList.remove("visible");
   } catch (e) {
     console.error("fetch failed", e);
+    const glyph = e.status === 429 ? "⏳" : "⚠";
+    const label = e.status === 429
+      ? "上游限流 · RATE LIMITED"
+      : "请求失败 · FETCH FAILED";
+    let hint;
+    if (e.status === 429) {
+      const sec = e.retryAfter || 0;
+      const min = Math.ceil(sec / 60);
+      hint = `LL2 限流 429 · 需等待约 ${min} 分钟后重试`
+           + (sec ? `  (Retry-After: ${sec}s)` : "");
+    } else {
+      hint = e?.message || "请稍后重试";
+    }
     document.querySelector("#upcomingGrid").innerHTML = `
       <div class="empty-state">
-        <div class="empty-glyph">⚠</div>
-        <div class="empty-msg">请求失败 · FETCH FAILED</div>
-        <div class="empty-hint">${escapeHTML(String(e?.message || e))}</div>
+        <div class="empty-glyph">${glyph}</div>
+        <div class="empty-msg">${escapeHTML(label)}</div>
+        <div class="empty-hint">${escapeHTML(hint)}</div>
       </div>`;
     document.querySelector("#pastGrid").innerHTML = emptyStateHTML(
-      "请求失败 · FETCH FAILED", "请稍后重试"
+      escapeHTML(label), escapeHTML(hint)
     );
     document.querySelector("#upcomingCount").textContent = "—  MISSIONS";
     document.querySelector("#pastCount").textContent     = "—  RECENT";

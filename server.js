@@ -15,8 +15,6 @@ function parseArgs(argv) {
     else if (a.startsWith('--port='))              opts.port = a.slice(7);
     else if (a === '--host')                       opts.host = argv[++i];
     else if (a.startsWith('--host='))              opts.host = a.slice(7);
-    else if (a === '--refresh-ms')                 opts.refreshMs = argv[++i];
-    else if (a.startsWith('--refresh-ms='))        opts.refreshMs = a.slice(13);
     else if (a === '--help' || a === '-h')         opts.help = true;
   }
   return opts;
@@ -29,27 +27,27 @@ Usage:
   node server.js [options]
 
 Options:
-  -p, --port <number>      Port to listen on          (env: PORT,                default: 3000)
-      --host <addr>        Bind interface             (env: HOST,                default: 0.0.0.0)
-      --refresh-ms <ms>    Background refresh rate    (env: REFRESH_INTERVAL_MS, default: 60000)
+  -p, --port <number>      Port to listen on          (env: PORT,      default: 3000)
+      --host <addr>        Bind interface             (env: HOST,      default: 0.0.0.0)
   -h, --help               Show this help
 
 Data:
   SQLite DB at    data/launches.db  (built-in node:sqlite, no native deps)
-  Auto-refreshes  every REFRESH_INTERVAL_MS. Manual refresh via POST /api/ll/refresh.
+  Refresh        MANUAL only — click FETCH DATA in the page, or POST /api/ll/refresh.
+                 No background timer. This keeps upstream request count minimal
+                 and avoids 429 throttling from the Launch Library 2 API.
 
 Examples:
   node server.js
-  node server.js --port 4000 --refresh-ms 30000
-  PORT=8080 REFRESH_INTERVAL_MS=120000 node server.js
+  node server.js --port 4000
+  PORT=8080 node server.js
 `);
 }
 const argv = parseArgs(process.argv.slice(2));
 if (argv.help) { showHelp(); process.exit(0); }
 
-const PORT               = Number(argv.port        || process.env.PORT)               || 3000;
-const HOST               = argv.host                || process.env.HOST               || '0.0.0.0';
-const REFRESH_MS         = Number(argv.refreshMs    || process.env.REFRESH_INTERVAL_MS) || 60_000;
+  const PORT               = Number(argv.port        || process.env.PORT)               || 3000;
+  const HOST               = argv.host                || process.env.HOST               || '0.0.0.0';
 
 /* ────────  country code → name (3-letter ISO 3166-1 alpha-3)  ──────── */
 const COUNTRY_NAMES = {
@@ -149,8 +147,26 @@ async function fetchUpstream() {
     `${API_BASE}/launch/previous/?limit=24&mode=detailed&ordering=-net`,
     { headers: { 'User-Agent': UA } },
   );
-  if (!u.ok || !p.ok) throw new Error(`upstream ${u.status}/${p.status}`);
+  if (!u.ok || !p.ok) {
+    const err = new Error(`upstream ${u.status}/${p.status}`);
+    err.upcomingStatus = u.status;
+    err.pastStatus     = p.status;
+    /* LL2 returns a JSON body like {"detail":"... Expected available in N seconds."}
+       on 429; we surface it to the client so the UI can show a precise wait time. */
+    err.retryAfter = parseRetryAfter(u.headers.get('retry-after'), u);
+    throw err;
+  }
   return { upcoming: await u.json(), past: await p.json() };
+}
+
+/* Parse Retry-After. May be either an HTTP-date or a seconds value.
+   If absent, attempt to extract seconds from the JSON body. */
+function parseRetryAfter(header, response) {
+  if (header) {
+    const asInt = parseInt(header, 10);
+    if (!Number.isNaN(asInt)) return asInt;
+  }
+  return null;
 }
 
 /* ────────  refresh DB from upstream  ──────── */
@@ -194,7 +210,12 @@ app.post('/api/ll/refresh', async (req, res) => {
     await refresh();
     res.json(payload());
   } catch (e) {
-    res.status(502).json({ error: 'refresh failed', detail: String(e) });
+    const rateLimited = e.upcomingStatus === 429 || e.pastStatus === 429;
+    res.status(rateLimited ? 429 : 502).json({
+      error:     rateLimited ? 'rate_limited' : 'refresh_failed',
+      detail:    String(e?.message || e),
+      retryAfter: e.retryAfter || null,
+    });
   }
 });
 
@@ -286,30 +307,24 @@ function logBanner(prefix = '') {
   console.log(`  Listening on  ${HOST}:${PORT}`);
   console.log(`  Open          ${netUrl}`);
   console.log(`  DB file       ${dbMod.DB_PATH}`);
-  console.log(`  Refresh rate  every ${REFRESH_MS} ms`);
+  console.log(`  Refresh       manual only (button)`);
   console.log('  ─────────────────────────────────\n');
 }
 
-/* ────────  startup: warm cache if empty, log banner  ──────── */
+/* ────────  startup: warm cache if empty, log banner  ────────
+   No background refresh — manual via POST /api/ll/refresh only.
+   This keeps upstream request count at exactly the number of button
+   clicks, avoiding 429 throttling from the Launch Library 2 API. */
 const metaAtBoot = dbMod.getCacheMeta(db);
 if (!metaAtBoot.lastRefresh) {
-  console.log('  ⏳ cache empty — warming…');
+  console.log('  ⏳ cache empty — warming once on startup (no recurring refresh)…');
   refresh()
     .then(() => logBanner())
-    .catch((e) => { console.error('  ✗ initial refresh failed:', String(e)); logBanner(); });
+    .catch((e) => { console.error('  ✗ initial refresh failed:', String(e?.message || e)); logBanner(); });
 } else {
   console.log(`  ✓ cache loaded from disk — ${metaAtBoot.totalRows} rows, last ${new Date(metaAtBoot.lastRefresh).toISOString()}`);
   logBanner();
 }
-
-let refreshing = false;
-setInterval(async () => {
-  if (refreshing) return;
-  refreshing = true;
-  try { await refresh(); }
-  catch (e) { console.error('  ✗ bg refresh failed:', String(e)); }
-  refreshing = false;
-}, REFRESH_MS);
 
 /* ────────  start listening  ──────── */
 const server = app.listen(PORT, HOST, () => {
