@@ -68,6 +68,14 @@
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const normDeg = (d) => ((d % 360) + 360) % 360;
 
+  /* Subtract Earth rotation from an inertial longitude to get the
+     sub-satellite (ground-fixed) longitude at time t seconds after launch.
+     Without this correction the track drifts ~2-4° east of true. */
+  function _subEarthRot(lonInertialDeg, tSec) {
+    const rotDeg = toDeg(OMEGA) * tSec;
+    return ((lonInertialDeg - rotDeg + 540) % 360 + 360) % 360 - 180;
+  }
+
   /* ============= 1.  parse LL2 JSON ============= */
   function parseLL2Launch(ll2) {
     const pad       = ll2.pad || {};
@@ -134,6 +142,10 @@
       return absLat < 53.0 ? 53.0 : 70.0;
 
     // Default LEO: a bit above pad latitude, never below 28.5°
+    // Taiyuan LC-9A (38.85°N) with unknown orbit → almost certainly SSO (~97.6°),
+    // never a low-inclination LEO, so override the lat+1.5 default.
+    if (absLat > 35 && padUpper.includes("TAIYUAN") && orbitAbr === "N/A")
+      return 97.6;
     return Math.min(90.0, Math.max(absLat + 1.5, 28.5));
   }
 
@@ -241,19 +253,19 @@
           const h  = h0 + r * (h1 - h0);
           const vh = vh0 + r * (vh1 - vh0);
           const vv = vv0 + r * (vv1 - vv0);
-          const [lat, lon] = rangeToECEF(s);
+          const [lat, lonInertial] = rangeToECEF(s);
           return {
             t, range_km: round1(s), alt_km: round1(h),
             vh_kms: round2(vh), vv_kms: round2(vv),
-            lat, lon, phase: t <= tMeco ? "ACTIVE" : "ORBIT",
+            lat, lon: _subEarthRot(lonInertial, t), phase: t <= tMeco ? "ACTIVE" : "ORBIT",
           };
         }
       }
       const kf = keyframes[keyframes.length - 1];
-      const [lat, lon] = rangeToECEF(kf[1]);
+      const [lat, lonInertial] = rangeToECEF(kf[1]);
       return {
         t, range_km: kf[1], alt_km: kf[2], vh_kms: kf[3], vv_kms: kf[4],
-        lat, lon, phase: "ORBIT",
+        lat, lon: _subEarthRot(lonInertial, t), phase: "ORBIT",
       };
     }
 
