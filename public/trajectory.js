@@ -62,6 +62,47 @@
   const KF_LIGHT_2STAGE = KF_EXPENDABLE;          // small 2-stage (Electron etc.)
   const DROP_LIGHT      = [["Stage 1", 165.0, 0.95]];
 
+  /* -------- Long March 6A (CZ-6A) — 两级半固液捆绑 --------
+     Event times are the published flight sequence:
+       t=0     起飞                Liftoff
+       t=10    垂直起飞结束         Vertical ascent ends
+       t=114.5 助推器燃尽           Booster burnout
+       t=117.5 助推器分离           Booster separation
+       t=179   整流罩分离           Fairing separation
+       t=238.5 一二级分离           Stage 1 separation
+       t=240   二级点火             Stage 2 ignition
+       t=786   二级关机             Stage 2 cutoff  (SSO insertion)
+       t=813   末修关机             Final trim cutoff
+       t=886   主星分离             Payload separation
+     Payload to SSO >= 6.5 t at 500 km. */
+  const KF_CZ6A = [
+    [  0.0,     0.0,   0.5, 0.00, 0.00, "Liftoff"],
+    [ 10.0,     0.3,   0.3, 0.05, 1.45, "Pitch Over"],
+    [114.5,    70.8,  46.0, 1.30, 0.52, "Booster Burnout"],
+    [117.5,    74.7,  50.0, 1.34, 0.50, "Booster Sep"],
+    [179.0,   180.5,  95.0, 2.10, 0.62, "Fairing Sep"],
+    [238.5,   315.9, 120.0, 2.45, 0.42, "Stage 1 Sep"],
+    [240.0,   321.0, 121.5, 2.46, 0.30, "Stage 2 Ignition"],
+    [450.0,  1029.7, 280.0, 4.30, 0.18, null],
+    [620.0,  1930.7, 410.0, 6.30, 0.08, null],
+    [786.0,  3080.3, 495.0, 7.55, 0.02, "SECO / Orbit Insertion"],
+    [813.0,  3284.2, 498.0, 7.55, 0.00, "Final Trim Cutoff"],
+    [886.0,  3835.4, 500.0, 7.55, 0.00, "Payload Separation"],
+  ];
+  const DROP_CZ6A = [
+    ["Solid Boosters",    117.5, 2.6],
+    ["Payload Fairing",   179.0, 3.8],
+  ];
+
+  /* Full flight duration per profile — the engine extends the requested
+     window to at least this so no keyframe (SECO, payload sep) is cut off. */
+  const T_FLIGHT = {
+    REUSABLE_2STAGE:    900,
+    EXPENDABLE_BOOSTER: 900,
+    LIGHT_2STAGE:       900,
+    CZ6A:               886,
+  };
+
   /* ============= helpers ============= */
   const toRad = (d) => d * Math.PI / 180;
   const toDeg = (r) => r * 180 / Math.PI;
@@ -165,6 +206,9 @@
   /* ============= 4.  classify rocket profile ============= */
   function classifyRocketProfile(rocketName) {
     const r = (rocketName || "").toUpperCase();
+    /* CZ-6A first — the generic LONG MARCH rule below would swallow it */
+    if (/LONG MARCH 6A|CZ-6A|CHANG ZHENG 6A|LM-6A/.test(r))
+      return "CZ6A";
     if (/FALCON 9|FALCON HEAVY|NEW GLENN|ZHUQUE-3|LONG MARCH 10|LONG MARCH 9|STARSHIP/.test(r))
       return "REUSABLE_2STAGE";
     if (/LONG MARCH|SOYUZ|ARIANE|VULCAN|ATLAS|H-IIA|H3|GSLV|PSLV|PROTON|ANGARA|VEGA|TITAN|DELTA|EPSILON/.test(r))
@@ -220,7 +264,22 @@
     meta.azimuth_ground_eff_deg = az.azimuth_ground_eff_deg;
 
     const { keyframes, dropConfigs } = getKinematicTemplate(profile_type);
-    const tMeco = 580.0;
+    /* Engine cutoff = the keyframe that carries the insertion/SECO label, so
+       the ACTIVE -> ORBIT transition follows each profile's real timeline
+       (CZ-6A inserts at 786 s, not the 580 s of the generic templates). */
+    let tMeco = 0;
+    for (const kf of keyframes) {
+      if (kf[5] && /SECO|ORBIT INSERTION/i.test(kf[5])) { tMeco = kf[0]; break; }
+    }
+    if (!tMeco) tMeco = keyframes[keyframes.length - 1][0];
+    /* Always show the whole profile — never truncate before SECO / payload sep,
+       even when the caller asks for a shorter window (e.g. the UI's 600 s). */
+    const endT    = getProfileFlightTime(profile_type);
+    const effMaxT = Math.max(maxTimeS, endT);
+    const keyEnd  = keyframes[keyframes.length - 1][0];
+    meta.flight_time_s = Math.max(effMaxT, keyEnd);
+    meta.profile_end_s = keyEnd;
+    meta.seco_time_s   = tMeco;
 
     const lat0Rad = toRad(lat0_deg);
     const lon0Rad = toRad(lon0_deg);
@@ -271,7 +330,10 @@
 
     /* 1. trajectory time series */
     const trajectory = [];
-    for (let t = 0; t <= maxTimeS; t += stepS) trajectory.push(interpKF(t));
+    for (let t = 0; t <= meta.flight_time_s; t += stepS) trajectory.push(interpKF(t));
+    /* append the exact profile end so SECO / payload-separation are sampled */
+    if (trajectory[trajectory.length - 1].t < meta.profile_end_s)
+      trajectory.push(interpKF(meta.profile_end_s));
 
     /* 2. flight events at keyframes that have labels */
     const events = [];
@@ -316,7 +378,11 @@
     if (profile === "REUSABLE_2STAGE")    return { keyframes: KF_REUSABLE_2STAGE, dropConfigs: DROP_REUSABLE };
     if (profile === "EXPENDABLE_BOOSTER") return { keyframes: KF_EXPENDABLE,      dropConfigs: DROP_EXPENDABLE };
     if (profile === "LIGHT_2STAGE")       return { keyframes: KF_LIGHT_2STAGE,    dropConfigs: DROP_LIGHT };
+    if (profile === "CZ6A")               return { keyframes: KF_CZ6A,            dropConfigs: DROP_CZ6A };
     return { keyframes: KF_EXPENDABLE, dropConfigs: DROP_EXPENDABLE };
+  }
+  function getProfileFlightTime(profile) {
+    return T_FLIGHT[profile] || 900;
   }
 
   /* ============= utilities exposed ============= */
@@ -334,6 +400,7 @@
     computeGroundAzimuth,
     generatePrediction,
     getKinematicTemplate,
+    getProfileFlightTime,
     round1, round2, round4,
   };
 
