@@ -1156,6 +1156,212 @@ async function copyIcsUrl(btn) {
 }
 
 /* =====================================================================
+   FILTERS
+   ---------------------------------------------------------------------
+   Client-side over the loaded cache. Deliberately not pushed to the
+   server: the cache is already in memory and the slices are small, so
+   this stays instant and works offline once loaded.
+
+   Country comes from launch_service_provider.country_code (the flag the
+   cards already use), rocket from rocket.configuration.full_name. Options
+   are derived from whatever is actually in the cache, so a filter never
+   offers a combination that cannot exist in the current dataset.
+   ===================================================================== */
+const FILTER_KEY = 'rocket.filters.v1';
+
+const filters = {
+  country: '',
+  rocket: '',
+  from: null,   // ms epoch, inclusive
+  to:   null,   // ms epoch, inclusive
+};
+
+function saveFilters() {
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify(filters)); } catch { /* ignore */ }
+}
+function loadFilters() {
+  try {
+    const o = JSON.parse(localStorage.getItem(FILTER_KEY)) || {};
+    filters.country = typeof o.country === 'string' ? o.country : '';
+    filters.rocket  = typeof o.rocket  === 'string' ? o.rocket  : '';
+    filters.from    = Number.isFinite(o.from) ? o.from : null;
+    filters.to      = Number.isFinite(o.to)   ? o.to   : null;
+  } catch { /* ignore */ }
+}
+
+const countryOf = (l) => l.launch_service_provider?.country_code || '';
+const rocketOf  = (l) => l.rocket?.configuration?.full_name || '';
+
+/** All launches the cache holds, future and past, in net order. */
+function allCachedLaunches() {
+  if (!_lastCache) return [];
+  const now = Date.now();
+  return [
+    ..._lastCache.upcoming.results,
+    ..._lastCache.past.results,
+  ].filter((l) => l && l.net).sort(
+    (a, b) => new Date(a.net).getTime() - new Date(b.net).getTime()
+  );
+}
+
+function hasActiveFilters() {
+  return !!(filters.country || filters.rocket || filters.from || filters.to);
+}
+
+function matchesFilters(l) {
+  if (filters.country && countryOf(l) !== filters.country) return false;
+  if (filters.rocket  && rocketOf(l)  !== filters.rocket)  return false;
+  const t = new Date(l.net).getTime();
+  if (!Number.isFinite(t)) return false;
+  if (filters.from != null && t < filters.from) return false;
+  if (filters.to   != null && t > filters.to)   return false;
+  return true;
+}
+
+/** ISO yyyy-mm-dd in local time, for the <input type="date"> round-trip. */
+function toDateInputValue(ms) {
+  if (ms == null) return '';
+  const d = new Date(ms);
+  if (isNaN(d)) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function fromDateInputValue(s) {
+  if (!s) return null;
+  const t = new Date(`${s}T00:00:00`).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Rebuild the two <select>s from the cache, keeping the current choice if
+ *  it still exists (otherwise dropping it is less confusing than showing a
+ *  selection that yields zero rows). */
+function populateFilterOptions() {
+  const all = allCachedLaunches();
+  const cc = new Map(), rk = new Map();
+  for (const l of all) {
+    const c = countryOf(l); if (c) cc.set(c, (cc.get(c) || 0) + 1);
+    const k = rocketOf(l);  if (k) rk.set(k, (rk.get(k) || 0) + 1);
+  }
+
+  const build = (sel, map, cur) => {
+    if (!sel) return;
+    const entries = [...map].sort((a, b) => b[1] - a[1]);
+    const exists = map.has(cur);
+    const keep = exists ? cur : '';
+    sel.innerHTML =
+      `<option value="">ALL · 全部 (${all.length})</option>` +
+      entries.map(([v, n]) =>
+        `<option value="${escapeHTML(v)}"${v === keep ? ' selected' : ''}>${escapeHTML(flagOf(v) + ' ' + v)} (${n})</option>`
+      ).join('');
+    if (!exists && cur) { filters.country = ''; filters.rocket = ''; }
+    return keep;
+  };
+
+  filters.country = build(document.querySelector("#filterCountry"), cc, filters.country) ?? '';
+  filters.rocket  = build(document.querySelector("#filterRocket"),  rk, filters.rocket)  ?? '';
+}
+
+const FILTER_FLAG = {
+  USA:'🇺🇸', CHN:'🇨🇳', IND:'🇮🇳', JPN:'🇯🇵', RUS:'🇷🇺', DEU:'🇩🇪', FRA:'🇫🇷', ITA:'🇮🇹',
+  KOR:'🇰🇷', PRK:'🇰🇵', IRN:'🇮🇷', ISR:'🇮🇱', BRA:'🇧🇷', AUS:'🇦🇺', NZL:'🇳🇿', CAN:'🇨🇦',
+  ZAF:'🇿🇦', UKR:'🇺🇦', GBR:'🇬🇧', FRA2:'', ESP:'🇪🇸', NLD:'🇳🇱', BEL:'🇧🇪', CHE:'🇨🇭',
+  SWE:'🇸🇪', NOR:'🇳🇴', FIN:'🇫🇮', DNK:'🇩🇰', POL:'🇵🇱', CZE:'🇨🇿', GRC:'🇬🇷',
+  TUR:'🇹🇷', EGY:'🇪🇬', KAZ:'🇰🇿', THA:'🇹🇭', VNM:'🇻🇳', IDN:'🇮🇩', MYS:'🇲🇾', PHL:'🇵🇭',
+  SGP:'🇸🇬', ARE:'🇦🇪', SAU:'🇸🇦', ARE2:'', EGY2:'', MNG:'🇲🇳', TWN:'🇹🇼',
+};
+const flagOf = (cc) => FILTER_FLAG[cc] || '🏳️';
+
+function applyRangePreset(kind) {
+  const DAY = 86400e3;
+  const now = Date.now();
+  if (kind === 'all') { filters.from = null; filters.to = null; }
+  else if (kind.startsWith('past')) {
+    const d = parseInt(kind.slice(4), 10) || 30;
+    filters.from = now - d * DAY;
+    filters.to   = now;
+  } else {
+    const d = parseInt(kind, 10) || 30;
+    filters.from = now;
+    filters.to   = now + d * DAY;
+  }
+  const fi = document.querySelector("#filterFrom");
+  const ti = document.querySelector("#filterTo");
+  if (fi) fi.value = toDateInputValue(filters.from);
+  if (ti) ti.value = toDateInputValue(filters.to);
+}
+
+function updateFilterUI() {
+  const badge = document.querySelector("#filterBadge");
+  if (badge) {
+    const n = [filters.country, filters.rocket].filter(Boolean).length +
+              (filters.from != null || filters.to != null ? 1 : 0);
+    badge.hidden = n === 0;
+    badge.textContent = String(n);
+  }
+  const c = document.querySelector("#filterCountry");
+  const r = document.querySelector("#filterRocket");
+  if (c && c.value !== filters.country) c.value = filters.country;
+  if (r && r.value !== filters.rocket)  r.value = filters.rocket;
+}
+
+function clearFilters() {
+  filters.country = '';
+  filters.rocket  = '';
+  filters.from    = null;
+  filters.to      = null;
+  const fi = document.querySelector("#filterFrom");
+  const ti = document.querySelector("#filterTo");
+  if (fi) fi.value = '';
+  if (ti) ti.value = '';
+  saveFilters();
+  rerenderLists();
+}
+
+function initFilters() {
+  loadFilters();
+  const fi = document.querySelector("#filterFrom");
+  const ti = document.querySelector("#filterTo");
+  if (fi) fi.value = toDateInputValue(filters.from);
+  if (ti) ti.value = toDateInputValue(filters.to);
+
+  const bar   = document.querySelector("#filterBar");
+  const btn   = document.querySelector("#filterToggle");
+  const panel = document.querySelector("#filterPanel");
+  btn?.addEventListener("click", () => {
+    const open = panel.hidden;
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    bar?.classList.toggle("open", open);
+  });
+
+  document.querySelector("#filterCountry")?.addEventListener("change", (e) => {
+    filters.country = e.target.value; saveFilters(); rerenderLists();
+  });
+  document.querySelector("#filterRocket")?.addEventListener("change", (e) => {
+    filters.rocket = e.target.value; saveFilters(); rerenderLists();
+  });
+  fi?.addEventListener("change", (e) => {
+    filters.from = fromDateInputValue(e.target.value); saveFilters(); rerenderLists();
+  });
+  ti?.addEventListener("change", (e) => {
+    filters.to = fromDateInputValue(e.target.value);
+    // <input type="date"> yields 00:00 local, so an end date should include
+    // the whole day
+    if (filters.to != null) filters.to += 86399e3;
+    saveFilters(); rerenderLists();
+  });
+  document.querySelector("#filterClear")?.addEventListener("click", clearFilters);
+  panel?.querySelectorAll("[data-range]").forEach((b) => {
+    b.addEventListener("click", () => {
+      applyRangePreset(b.dataset.range);
+      saveFilters();
+      rerenderLists();
+    });
+  });
+
+  updateFilterUI();
+}
+
+/* =====================================================================
    EMPTY STATES
    ===================================================================== */
 function emptyStateHTML(label, hint) {
@@ -1166,19 +1372,13 @@ function emptyStateHTML(label, hint) {
       <div class="empty-hint">${escapeHTML(hint)}</div>
     </div>`;
 }
-function showEmptyUpcoming() {
-  document.querySelector("#upcomingGrid").innerHTML = emptyStateHTML(
-    "暂无发射计划 · NO UPCOMING MISSIONS",
-    "点击右上 FETCH DATA 按钮获取"
-  );
-  document.querySelector("#upcomingCount").textContent = "—  MISSIONS";
+function showEmptyUpcoming(label = "暂无发射计划 · NO UPCOMING MISSIONS",
+                          hint  = "点击右上 FETCH DATA 按钮获取") {
+  document.querySelector("#upcomingGrid").innerHTML = emptyStateHTML(label, hint);
 }
-function showEmptyPast() {
-  document.querySelector("#pastGrid").innerHTML = emptyStateHTML(
-    "暂无历史数据 · NO RECENT MISSIONS",
-    "点击右上 FETCH DATA 按钮获取"
-  );
-  document.querySelector("#pastCount").textContent = "—  RECENT";
+function showEmptyPast(label = "暂无历史数据 · NO RECENT MISSIONS",
+                       hint  = "点击右上 FETCH DATA 按钮获取") {
+  document.querySelector("#pastGrid").innerHTML = emptyStateHTML(label, hint);
 }
 
 /* =====================================================================
@@ -1210,12 +1410,36 @@ async function loadFromCache() {
 }
 
 function applyCache(cache) {
-  /* Upcoming — server already filtered (net__gte=now), but defend again */
-  const now = Date.now();
-  const future = cache.upcoming.results.filter((l) => new Date(l.net).getTime() >= now);
+  _lastCache = cache;
+  populateFilterOptions();
+  rerenderLists();
+  /* freshness indicators belong to the fetch, not the filter, so they stay
+     here rather than in rerenderLists() */
+  lastFetchedAt = cache.updated ? new Date(cache.updated) : new Date();
+  updateLastFetchedLabel();
+  setBtnState("ready");
+}
 
-  document.querySelector("#upcomingCount").textContent =
-    `${cache.upcomingCount}  MISSIONS · 任务`;
+/** Split the cache into upcoming/past and render both grids, honouring the
+ *  active filters. Kept separate from applyCache() so a filter change can
+ *  re-render without touching the network. */
+function rerenderLists() {
+  if (!_lastCache) return;
+  const now = Date.now();
+  const all = allCachedLaunches();
+  const kept = hasActiveFilters() ? all.filter(matchesFilters) : all;
+
+  const future = kept.filter((l) => new Date(l.net).getTime() >= now);
+  const past   = kept.filter((l) => new Date(l.net).getTime() <  now);
+
+  const totalU = _lastCache.upcoming.results.filter((l) => new Date(l.net).getTime() >= now).length;
+  const totalP = _lastCache.past.results.length;
+  const filtered = hasActiveFilters();
+
+  const suffix = filtered
+    ? ` · ${future.length}/${totalU}` + "  FILTERED"
+    : `${totalU}  MISSIONS · 任务`;
+  document.querySelector("#upcomingCount").textContent = suffix;
 
   const gridU = document.querySelector("#upcomingGrid");
   gridU.innerHTML = "";
@@ -1227,34 +1451,58 @@ function applyCache(cache) {
       if (i === 0) renderHero(launch);
     });
     document.querySelector("#heroName").textContent = future[0].name;
-    document.querySelector("#heroMeta").textContent =
-      `已加载 · NEXT MISSION · 下一发任务`;
+    document.querySelector("#heroMeta").textContent = filtered
+      ? `已筛选 · NEXT MATCHING MISSION · 下一发匹配任务`
+      : `已加载 · NEXT MISSION · 下一发任务`;
   } else {
-    showEmptyUpcoming();
+    showEmptyUpcoming(filtered
+      ? "没有符合筛选条件的未来发射 · NO MATCHING UPCOMING MISSIONS"
+      : "暂无发射计划 · NO UPCOMING MISSIONS",
+      filtered ? "试试放宽日期范围或清除筛选" : "点击右上 FETCH DATA 按钮获取");
     document.querySelector("#heroName").textContent = "—";
-    document.querySelector("#heroMeta").textContent =
-      "暂无未来发射计划 · NO UPCOMING MISSIONS";
+    document.querySelector("#heroMeta").textContent = filtered
+      ? "当前筛选条件下没有未来发射任务"
+      : "暂无未来发射计划 · NO UPCOMING MISSIONS";
     document.querySelector("#heroNet").textContent = "—";
     hero.launch = null;
   }
 
-  /* Past */
-  document.querySelector("#pastCount").textContent =
-    `${cache.pastCount}  RECENT · 已完成`;
+  document.querySelector("#pastCount").textContent = filtered
+    ? ` · ${past.length}/${totalP}` + "  FILTERED"
+    : `${totalP}  RECENT · 已完成`;
   const gridP = document.querySelector("#pastGrid");
   gridP.innerHTML = "";
-  if (cache.past.results.length) {
-    cache.past.results.forEach((launch) => {
+  if (past.length) {
+    past.forEach((launch) => {
       gridP.appendChild(makeCard(launch, { past: true }));
     });
   } else {
-    showEmptyPast();
+    showEmptyPast(filtered
+      ? "没有符合筛选条件的历史发射 · NO MATCHING PAST MISSIONS"
+      : "暂无历史数据 · NO RECENT MISSIONS",
+      filtered ? "试试放宽日期范围或清除筛选" : "点击右上 FETCH DATA 按钮获取");
   }
 
-  /* Update freshness indicators */
-  lastFetchedAt = cache.updated ? new Date(cache.updated) : new Date();
-  updateLastFetchedLabel();
-  setBtnState("ready");
+  updateFilterSummary(kept.length, all.length);
+  updateFilterUI();
+}
+
+function updateFilterSummary(shown, total) {
+  const el = document.querySelector("#filterSummary");
+  if (!el) return;
+  if (!hasActiveFilters()) {
+    el.textContent = `显示全部 ${total} 次发射`;
+    return;
+  }
+  const bits = [];
+  if (filters.country) bits.push(filters.country);
+  if (filters.rocket)  bits.push(filters.rocket);
+  if (filters.from != null || filters.to != null) {
+    const f = filters.from != null ? new Date(filters.from).toISOString().slice(0, 10) : "…";
+    const t = filters.to   != null ? new Date(filters.to).toISOString().slice(0, 10)   : "…";
+    bits.push(`${f} → ${t}`);
+  }
+  el.textContent = `匹配 ${shown}/${total} 次发射 · ${bits.join(" · ")}`;
 }
 
 /* =====================================================================
@@ -1361,16 +1609,19 @@ function syncTzButton() {
 }
 
 function rerenderForTz() {
-  /* If we have a last cache, replay applyCache to rewrite every time
+  /* If we have a last cache, replay the render to rewrite every time
      string in the cards with the new TZ. The countdown ticker keeps
      working unchanged (TZ-independent math). */
-  if (_lastCache) applyCache(_lastCache);
+  if (_lastCache) rerenderLists();
   updateLastFetchedLabel();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  document.querySelector("#upcomingCount").textContent = "—  MISSIONS";
+  document.querySelector("#pastCount").textContent     = "—  RECENT";
   showEmptyUpcoming();
   showEmptyPast();
+  initFilters();
   document.querySelector("#fetchBtn").addEventListener("click", handleFetch);
   document.querySelector("#icsBtn")?.addEventListener("click", openIcsModal);
   document.querySelector("#icsCopyBtn")?.addEventListener("click", (e) => copyIcsUrl(e.currentTarget));

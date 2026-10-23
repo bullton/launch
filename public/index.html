@@ -39,6 +39,52 @@
       </div>
     </div>
     <div id="cacheHint" class="cache-hint"></div>
+
+    <!-- ──────── FILTER BAR ──────── -->
+    <div id="filterBar" class="filter-bar">
+      <button id="filterToggle" class="filter-toggle" type="button" aria-expanded="false">
+        <span class="filter-toggle-glyph" aria-hidden="true">⚙</span>
+        <span>FILTER · 筛选</span>
+        <span id="filterBadge" class="filter-badge" hidden>0</span>
+      </button>
+      <div id="filterPanel" class="filter-panel" hidden>
+        <div class="filter-grid">
+          <label class="filter-field">
+            <span class="filter-label">COUNTRY · 国家/地区</span>
+            <select id="filterCountry"><option value="">ALL · 全部</option></select>
+          </label>
+          <label class="filter-field">
+            <span class="filter-label">ROCKET · 火箭型号</span>
+            <select id="filterRocket"><option value="">ALL · 全部</option></select>
+          </label>
+          <label class="filter-field">
+            <span class="filter-label">FROM · 起始日期</span>
+            <input id="filterFrom" type="date" />
+          </label>
+          <label class="filter-field">
+            <span class="filter-label">TO · 截止日期</span>
+            <input id="filterTo" type="date" />
+          </label>
+        </div>
+        <div class="filter-presets">
+          <span class="filter-label">QUICK · 快捷</span>
+          <button type="button" data-range="7">未来7天</button>
+          <button type="button" data-range="30">未来30天</button>
+          <button type="button" data-range="90">未来90天</button>
+          <button type="button" data-range="365">未来1年</button>
+          <span class="filter-sep"></span>
+          <button type="button" data-range="past7">过去7天</button>
+          <button type="button" data-range="past30">过去30天</button>
+          <button type="button" data-range="past90">过去90天</button>
+          <span class="filter-sep"></span>
+          <button type="button" data-range="all">ALL TIME · 全部</button>
+        </div>
+        <div class="filter-foot">
+          <span id="filterSummary" class="filter-summary"></span>
+          <button id="filterClear" class="filter-clear" type="button">CLEAR · 清除全部</button>
+        </div>
+      </div>
+    </div>
   </header>
 
   <main>
