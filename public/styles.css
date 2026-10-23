@@ -870,6 +870,247 @@ button { font: inherit; cursor: pointer; }
   text-transform: uppercase;
   font-weight: 500;
   margin: 0 0 16px 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* ───────── manual trajectory override ───────── */
+.traj-override-btn {
+  margin-left: auto;
+  margin-bottom: -16px;
+  background: transparent;
+  color: var(--text-mute);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  padding: 5px 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.traj-override-btn:hover { color: #fff; border-color: #fff; }
+.traj-override-btn.on {
+  color: #000;
+  background: var(--hold, #ff9f0a);
+  border-color: var(--hold, #ff9f0a);
+}
+
+.traj-override-panel {
+  border: 1px solid var(--line-2);
+  background: rgba(255,255,255,0.025);
+  padding: 18px 20px 20px;
+  margin-bottom: 14px;
+}
+.traj-override-hint {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-mute);
+  margin: 0 0 16px;
+}
+
+/* NOTAM lookup */
+.notam-lookup-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.notam-lookup-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: #fff;
+  margin-bottom: 5px;
+}
+.notam-lookup-sub {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-mute);
+}
+#notamSearchBtn {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: #fff;
+  color: #000;
+  border: 1px solid #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+#notamSearchBtn:hover:not(:disabled) { background: var(--hold, #ff9f0a); border-color: var(--hold, #ff9f0a); }
+#notamSearchBtn:disabled { opacity: .5; cursor: progress; }
+
+.notam-status {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-dim);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.02);
+}
+.notam-status.err { border-color: rgba(255,69,58,0.4); color: #ff6961; }
+.notam-status .dim { color: var(--text-mute); font-size: 11px; }
+
+.notam-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  margin-bottom: 14px;
+}
+.notam-table th {
+  text-align: left;
+  color: var(--text-mute);
+  font-weight: 400;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--line-2);
+  white-space: nowrap;
+}
+.notam-table td {
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.notam-table td.mono { color: #fff; }
+.notam-table .ok  { color: #30d158; }
+.notam-table .extreme { color: #ffd60a; }
+
+.notam-verdict {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 16px;
+  border: 1px solid var(--line-2);
+  margin-bottom: 10px;
+}
+.notam-verdict b { display: block; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; margin-bottom: 4px; }
+.notam-verdict .dim { font-size: 11px; color: var(--text-mute); line-height: 1.55; display: block; }
+.notam-verdict.ok   { border-color: rgba(48,209,88,0.45); }
+.notam-verdict.ok b { color: #30d158; }
+.notam-verdict.warn { border-color: rgba(255,214,10,0.45); }
+.notam-verdict.warn b { color: #ffd60a; }
+.notam-verdict .applied {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: #000;
+  background: #30d158;
+  padding: 4px 8px;
+}
+.notam-verdict button {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.notam-verdict button:hover { color: #fff; border-color: #fff; }
+
+.notam-foot { font-size: 10px; letter-spacing: 0.1em; }
+
+.notam-manual { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+.notam-manual summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--text-mute);
+  margin-bottom: 14px;
+}
+.notam-manual[open] summary { margin-bottom: 14px; }
+.traj-override-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.traj-override-grid label { display: flex; flex-direction: column; gap: 6px; }
+.traj-override-grid label > span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--text-mute);
+}
+.traj-override-grid label em { color: #fff; font-style: normal; }
+.traj-override-grid input {
+  background: #0c0c0c;
+  border: 1px solid var(--line-2);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 9px 11px;
+  outline: none;
+  width: 100%;
+}
+.traj-override-grid input:focus { border-color: #fff; }
+
+.traj-override-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 18px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--text-mute);
+}
+.traj-override-presets button {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  padding: 5px 9px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.traj-override-presets button:hover { color: #fff; border-color: #fff; }
+
+.traj-override-actions { display: flex; gap: 10px; }
+.traj-override-actions button {
+  flex: 1;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  padding: 11px 0;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.traj-override-actions button:hover { color: #fff; border-color: #fff; }
+.traj-override-actions button.primary {
+  background: #fff;
+  color: #000;
+  border-color: #fff;
+}
+.traj-override-actions button.primary:hover { background: var(--hold, #ff9f0a); border-color: var(--hold, #ff9f0a); }
+
+.m-flag {
+  font-style: normal;
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  color: #000;
+  background: var(--hold, #ff9f0a);
+  padding: 1px 4px;
+  margin-left: 5px;
+  vertical-align: middle;
 }
 .m-grid {
   display: grid;

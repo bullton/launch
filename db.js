@@ -36,8 +36,35 @@ function openDb() {
       k TEXT PRIMARY KEY,
       v TEXT NOT NULL
     );
+
+    /* NOTAM lookups are cached per launch: they are only meaningful in the
+       last ~48 h before liftoff, and the FAA scraper is expensive to run. */
+    CREATE TABLE IF NOT EXISTS notam_cache (
+      launch_id TEXT PRIMARY KEY,
+      fetched_at INTEGER NOT NULL,
+      azimuth_deg REAL,
+      payload     TEXT NOT NULL
+    );
   `);
   return db;
+}
+
+/* -------- notam cache -------- */
+function putNotam(db, launchId, azimuthDeg, payload) {
+  db.prepare(`INSERT INTO notam_cache (launch_id, fetched_at, azimuth_deg, payload)
+              VALUES (?,?,?,?)
+              ON CONFLICT(launch_id) DO UPDATE SET
+                fetched_at = excluded.fetched_at,
+                azimuth_deg = excluded.azimuth_deg,
+                payload     = excluded.payload`)
+    .run(launchId, Date.now(), azimuthDeg == null ? null : azimuthDeg, JSON.stringify(payload));
+}
+function getNotam(db, launchId) {
+  const r = db.prepare('SELECT fetched_at, azimuth_deg, payload FROM notam_cache WHERE launch_id = ?')
+    .get(launchId);
+  if (!r) return null;
+  try { return { fetchedAt: r.fetched_at, azimuth: r.azimuth_deg, ...JSON.parse(r.payload) }; }
+  catch { return null; }
 }
 
 /* -------- upsert a list of launches -------- */
@@ -125,5 +152,11 @@ module.exports = {
   getCacheMeta,
   getUpcoming,
   getPast,
+  putNotam,
+  getNotam,
+  getLaunch: (db, id) => {
+    const r = db.prepare('SELECT data FROM launches WHERE id = ?').get(id);
+    return r ? JSON.parse(r.data) : null;
+  },
   DB_PATH,
 };

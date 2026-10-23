@@ -427,6 +427,59 @@ app.get("/api/ll/calendar.ics", (req, res) => {
   res.send(body);
 });
 
+/* ────────  NOTAM drop-zone lookup  ────────
+   Drop-zone geometry is the only reliable direction cue when LL2 leaves the
+   orbit unpublished: the hazard areas for a launch are laid out along its
+   ground track, so joining the pad to them back-solves the launch bearing.
+
+   Results are cached per launch because the scraper needs a real browser
+   session (Akamai) and NOTAMs only matter in the last ~48 h before T-0.
+   `?force=1` bypasses the cache. */
+const NOTAM_TTL_MS = 6 * 60 * 60 * 1000;
+let notamMod = null;
+try { notamMod = require('./notam'); }
+catch (e) { console.warn('  ⚠ notam module unavailable:', e.message); }
+
+app.get('/api/ll/notam', async (req, res) => {
+  if (!notamMod) {
+    return res.status(503).json({ error: 'notam_unavailable', detail: 'playwright / notam.js not installed' });
+  }
+  const id = String(req.query.id || '');
+  if (!id) return res.status(400).json({ error: 'missing id' });
+
+  const launch = dbMod.getLaunch(db, id);
+  if (!launch) return res.status(404).json({ error: 'launch not found' });
+
+  const force = req.query.force === '1' || req.query.force === 'true';
+  if (!force) {
+    const hit = dbMod.getNotam(db, id);
+    if (hit && Date.now() - hit.fetchedAt < NOTAM_TTL_MS) {
+      return res.json({ ...hit, cached: true });
+    }
+  }
+
+  const t0 = Date.now();
+  let result = null;
+  try {
+    result = await notamMod.getLaunchDropZones(launch);
+  } catch (e) {
+    console.warn('  ✗ notam lookup failed:', e.message);
+    return res.status(502).json({ error: 'notam_lookup_failed', detail: e.message });
+  }
+
+  if (!result) {
+    dbMod.putNotam(db, id, null, { found: false });
+    return res.json({ found: false, launch_name: launch.name, cached: false });
+  }
+
+  dbMod.putNotam(db, id, result.azimuth_deg ?? null, { found: true, ...result });
+  console.log(`  ✓ NOTAM ${launch.name}: ${result.drop_zones?.length || 0} zone(s)` +
+    (result.azimuth_deg != null ? `, bearing ${result.azimuth_deg}°` : ', no usable bearing') +
+    ` (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+
+  res.json({ found: true, cached: false, ...result });
+});
+
 /* ────────  startup banner  ──────── */
 function logBanner(prefix = '') {
   const netUrl = (HOST === '0.0.0.0' || HOST === '::') ? `http://localhost:${PORT}` : `http://${HOST}:${PORT}`;

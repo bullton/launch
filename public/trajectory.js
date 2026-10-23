@@ -254,14 +254,42 @@
     };
   }
 
-  /* ============= 6.  main: generate prediction ============= */
-  function generatePrediction(ll2, maxTimeS = 600, stepS = 30) {
+  /* ============= 6.  main: generate prediction =============
+     opts.inclination_deg — override the inferred orbit inclination
+     opts.azimuth_deg     — override the ground-effective launch bearing
+                             (wins over inclination; this is the knob a
+                             NOTAM-derived drop-zone bearing plugs into)
+     opts.profile        — force a kinematic profile (e.g. "CZ6A")
+  */
+  function generatePrediction(ll2, maxTimeS = 600, stepS = 30, opts = {}) {
     const meta = parseLL2Launch(ll2);
-    const { lat0_deg, lon0_deg, inclination_deg, launch_southward, profile_type } = meta;
 
-    const az = computeGroundAzimuth(lat0_deg, inclination_deg, launch_southward);
+    if (opts.inclination_deg != null && Number.isFinite(opts.inclination_deg)) {
+      meta.inclination_deg = opts.inclination_deg;
+      meta.inclination_source = "manual";
+    } else {
+      meta.inclination_source = meta.inclination_source || "inferred";
+    }
+
+    const az = computeGroundAzimuth(
+      meta.lat0_deg, meta.inclination_deg, meta.launch_southward
+    );
     meta.azimuth_inertial_deg   = az.azimuth_inertial_deg;
     meta.azimuth_ground_eff_deg = az.azimuth_ground_eff_deg;
+
+    /* An explicit bearing bypasses the inclination -> azimuth derivation
+       entirely. Useful when the true direction is known from a NOTAM drop
+       zone but the target inclination is not published. */
+    if (opts.azimuth_deg != null && Number.isFinite(opts.azimuth_deg)) {
+      meta.azimuth_ground_eff_deg = normDeg(opts.azimuth_deg);
+      meta.azimuth_source = "manual";
+    } else {
+      meta.azimuth_source = meta.azimuth_source || "computed";
+    }
+
+    const { lat0_deg, lon0_deg, launch_southward } = meta;
+    const inclination_deg = meta.inclination_deg;
+    const profile_type = opts.profile || meta.profile_type;
 
     const { keyframes, dropConfigs } = getKinematicTemplate(profile_type);
     /* Engine cutoff = the keyframe that carries the insertion/SECO label, so
@@ -283,7 +311,10 @@
 
     const lat0Rad = toRad(lat0_deg);
     const lon0Rad = toRad(lon0_deg);
-    const AGdeg   = az.azimuth_ground_eff_deg;
+    /* read the bearing back off meta, not off the local `az`, so a manual
+       azimuth override actually reaches rangeToECEF */
+    const AGdeg   = round2(meta.azimuth_ground_eff_deg);
+    meta.azimuth_ground_eff_deg = AGdeg;
     const AGRad   = toRad(AGdeg);
 
     /* range-to-ECEF — spherical ground projection

@@ -120,6 +120,47 @@ function imgOf(launch) {
   return launch.image || launch.mission?.infographic || null;
 }
 
+/* =====================================================================
+   MANUAL TRAJECTORY OVERRIDE
+   ---------------------------------------------------------------------
+   LL2 publishes no inclination, so the engine has to infer the launch
+   bearing from orbit type. That inference is wrong often enough to be
+   worth a human escape hatch: a NOTAM drop zone, an operator press
+   release, or plain operator knowledge often pins the real direction down
+   while the orbit itself stays unpublished.
+
+   Overrides are per-launch and kept in localStorage — they are a viewing
+   preference for one mission, not an edit to shared data.
+   ===================================================================== */
+const TRAJ_OVR_KEY = 'rocket.trajOverrides.v1';
+
+function readAllTrajOverrides() {
+  try { return JSON.parse(localStorage.getItem(TRAJ_OVR_KEY)) || {}; }
+  catch { return {}; }
+}
+function readTrajOverride(launchId) {
+  const o = readAllTrajOverrides()[launchId];
+  if (!o) return null;
+  const inc = Number(o.inclination_deg), azi = Number(o.azimuth_deg);
+  const out = {};
+  if (Number.isFinite(inc) && o.inclination_deg !== null && o.inclination_deg !== '') out.inclination_deg = inc;
+  if (Number.isFinite(azi) && o.azimuth_deg   !== null && o.azimuth_deg   !== '') out.azimuth_deg = ((azi % 360) + 360) % 360;
+  return Object.keys(out).length ? out : null;
+}
+function writeTrajOverride(launchId, val) {
+  const all = readAllTrajOverrides();
+  if (val == null) delete all[launchId];
+  else all[launchId] = val;
+  try { localStorage.setItem(TRAJ_OVR_KEY, JSON.stringify(all)); }
+  catch (e) { console.warn('could not persist trajectory override', e); }
+}
+
+/** Re-open the modal so the trajectory, drop zones and events all redraw. */
+function rerenderTrajectoryModal(launch) {
+  closeModal();
+  openModal(launch);
+}
+
 const COUNTRY_3TO2 = {
   USA:'US', RUS:'RU', CHN:'CN', JPN:'JP', KOR:'KR', PRK:'KP', IND:'IN', ISR:'IL',
   IRN:'IR', SAU:'SA', ARE:'AE', TUR:'TR', EGY:'EG', KAZ:'KZ', AUS:'AU', NZL:'NZ',
@@ -440,9 +481,15 @@ function openModal(launch) {
   let flightEvents = [];       // [{ lat, lon, label, t }]
   let az = null;                // ground-effective azimuth in degrees
 
+  /* manual override for this launch (azimuth / inclination), if the user set one */
+  const trajOverride = readTrajOverride(launch.id);
+
   if (!isNaN(padLat) && !isNaN(padLon)) {
     try {
-      engResult = GlobalLaunchTrajectoryEngine.generatePrediction(launch, 600, 30);
+      engResult = GlobalLaunchTrajectoryEngine.generatePrediction(
+        launch, 600, 30,
+        trajOverride || {}
+      );
       az = engResult.metadata.azimuth_ground_eff_deg;
 
       /* ground-track polyline from engine's kinematic trajectory */
@@ -627,13 +674,57 @@ function openModal(launch) {
 
     ${trajLine ? `
     <div class="m-section">
-      <h3>TRAJECTORY · 轨迹预报</h3>
+      <h3>TRAJECTORY · 轨迹预报
+        <button id="trajOverrideBtn" class="traj-override-btn${trajOverride ? ' on' : ''}" type="button"
+          title="手动修正发射方位角 / inclination">${trajOverride ? 'MANUAL ON' : 'MANUAL · 手动修正'}</button>
+      </h3>
       <div class="m-trajectory-stats">
-        <span>INC <b>${engResult ? engResult.metadata.inclination_deg.toFixed(2) : "—"}°</b></span>
-        <span>AZ <b>${az != null ? az.toFixed(2) : "—"}°</b></span>
+        <span>INC <b>${engResult ? engResult.metadata.inclination_deg.toFixed(2) : "—"}°</b>${trajOverride?.inclination_deg != null ? ' <i class="m-flag">MANUAL</i>' : ""}</span>
+        <span>AZ <b>${az != null ? az.toFixed(2) : "—"}°</b>${trajOverride?.azimuth_deg != null ? ' <i class="m-flag">MANUAL</i>' : ""}</span>
         <span>DIR <b>${engResult ? (engResult.metadata.launch_southward ? "SOUTH" : "NORTH") : "—"}</b></span>
         <span>PROFILE <b>${engResult ? engResult.metadata.profile_type.replace("_", " ") : "—"}</b></span>
         <span>ROCKET <b>${escapeHTML(engResult ? engResult.metadata.rocket_name : (cfg.full_name || "—"))}</b></span>
+      </div>
+      <div id="trajOverridePanel" class="traj-override-panel" hidden>
+        <div class="notam-lookup">
+          <div class="notam-lookup-head">
+            <div>
+              <div class="notam-lookup-title">NOTAM DROP-ZONE LOOKUP · 航警落区查询</div>
+              <div class="notam-lookup-sub">
+                从 FAA NOTAM 检索本次发射的危险区/落区多边形，用「发射场 → 落区」连线反解发射方位角
+              </div>
+            </div>
+            <button id="notamSearchBtn" type="button" class="primary">查询 NOTAM</button>
+          </div>
+          <div id="notamResult" class="notam-result" hidden></div>
+        </div>
+        <details class="notam-manual">
+          <summary>MANUAL OVERRIDE · 手动填值（NOTAM 不可用时）</summary>
+          <div class="traj-override-grid">
+            <label>
+              <span>方位角 AZIMUTH <em>°</em></span>
+              <input id="trajAzInput" type="number" step="0.1" min="0" max="360"
+                value="${trajOverride?.azimuth_deg ?? (az != null ? az.toFixed(2) : '')}" placeholder="191.3" />
+            </label>
+            <label>
+              <span>倾角 INCLINATION <em>°</em></span>
+              <input id="trajIncInput" type="number" step="0.1" min="0" max="180"
+                value="${trajOverride?.inclination_deg ?? (engResult ? engResult.metadata.inclination_deg.toFixed(2) : '')}" placeholder="97.6" />
+            </label>
+          </div>
+          <div class="traj-override-presets">
+            <span>PRESETS</span>
+            <button type="button" data-inc="97.6">SSO 97.6</button>
+            <button type="button" data-inc="90">PO 90</button>
+            <button type="button" data-inc="53">ISS 53</button>
+            <button type="button" data-inc="41.5">CSS 41.5</button>
+            <button type="button" data-inc="0">EQUATOR 0</button>
+          </div>
+          <div class="traj-override-actions">
+            <button id="trajApplyBtn" type="button" class="primary">APPLY · 应用</button>
+            <button id="trajResetBtn" type="button">RESET · 恢复自动</button>
+          </div>
+        </details>
       </div>
       <div id="${mapId}" class="m-map"></div>
       <div class="m-trajectory-legend">
@@ -768,6 +859,26 @@ function openModal(launch) {
         );
       });
 
+      /* NOTAM hazard areas, when a lookup has been run for this launch */
+      const notam = notamCache.get(launch.id);
+      if (notam?.found) {
+        for (const z of [...(notam.launch_zone || []), ...(notam.drop_zones || [])]) {
+          if (!z.polygon || z.polygon.length < 3) continue;
+          const isLaunchZone = z.rangeKm < 120;
+          L.polygon(z.polygon.map(([la, lo]) => [la, lo]), {
+            color: isLaunchZone ? '#ffd60a' : '#30d158',
+            fillColor: isLaunchZone ? '#ffd60a' : '#30d158',
+            fillOpacity: 0.12,
+            weight: 1.5,
+            dashArray: '4 3',
+          }).addTo(map).bindPopup(
+            `<b>NOTAM ${escapeHTML(z.notamNumber)}</b><br/>` +
+            `${isLaunchZone ? 'launch danger area' : z.rangeKm + ' km downrange'}<br/>` +
+            `bearing ${z.bearingDeg}° · implied inc ${z.implied_incl_deg}°`
+          );
+        }
+      }
+
       /* drop zone markers (booster, fairing, side boosters) */
       dropZones.forEach((d, i) => {
         if (d.lat == null || d.lon == null) return;
@@ -792,6 +903,167 @@ function openModal(launch) {
       setTimeout(() => map.invalidateSize(), 60);
     }
   }
+
+  /* ---- manual trajectory override panel ---- */
+  const ovrBtn   = document.getElementById("trajOverrideBtn");
+  const ovrPanel = document.getElementById("trajOverridePanel");
+  const azInput  = document.getElementById("trajAzInput");
+  const incInput = document.getElementById("trajIncInput");
+
+  ovrBtn?.addEventListener("click", () => {
+    const show = ovrPanel.hidden;
+    ovrPanel.hidden = !show;
+    if (show) {
+      azInput?.focus();
+      // show any previously fetched result without re-querying
+      const cached = notamCache.get(launch.id);
+      if (cached) renderNotamResult(launch, cached);
+    }
+  });
+
+  /* ── NOTAM drop-zone lookup ── */
+  const searchBtn = document.getElementById("notamSearchBtn");
+  const resultEl  = document.getElementById("notamResult");
+
+  searchBtn?.addEventListener("click", async () => {
+    searchBtn.disabled = true;
+    searchBtn.textContent = "检索中… (~30s)";
+    resultEl.hidden = false;
+    resultEl.innerHTML = `<div class="notam-status">
+      正在启动浏览器会话并检索 FAA NOTAM… 首次查询需绕过 Akamai 校验，约 30 秒
+    </div>`;
+    try {
+      const r = await fetch(`${API}/notam?id=${encodeURIComponent(launch.id)}`);
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || e.error || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      notamCache.set(launch.id, data);
+      renderNotamResult(launch, data);
+      /* A bearing that survived the plausibility gate is better evidence than
+         the inclination heuristic, so adopt it and redraw. */
+      if (data.found && data.azimuth_deg != null) {
+        const cur = readTrajOverride(launch.id);
+        if (!cur || Math.abs((cur.azimuth_deg ?? NaN) - data.azimuth_deg) > 0.05) {
+          writeTrajOverride(launch.id, {
+            azimuth_deg: data.azimuth_deg,
+            inclination_deg: cur?.inclination_deg ?? null,
+          });
+          rerenderTrajectoryModal(launch);
+          return;
+        }
+      }
+    } catch (err) {
+      resultEl.innerHTML = `<div class="notam-status err">
+        查询失败：${escapeHTML(err.message)}<br/>
+        <span class="dim">NOTAM 源依赖 Playwright + 本机 Chrome，若不可用可用下方手动填值。</span>
+      </div>`;
+    } finally {
+      searchBtn.disabled = false;
+      searchBtn.textContent = "重新查询";
+    }
+  });
+
+  ovrPanel?.querySelectorAll("[data-inc]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const v = parseFloat(b.dataset.inc);
+      if (incInput) incInput.value = v.toFixed(1);
+      // inclination alone re-derives the bearing, so clear any manual azimuth
+      if (azInput) azInput.value = "";
+      incInput?.focus();
+    });
+  });
+
+  document.getElementById("trajApplyBtn")?.addEventListener("click", () => {
+    const azv = azInput?.value.trim();
+    const incv = incInput?.value.trim();
+    const payload = {
+      azimuth_deg:     azv === "" ? null : parseFloat(azv),
+      inclination_deg: incv === "" ? null : parseFloat(incv),
+    };
+    if (payload.azimuth_deg === null && payload.inclination_deg === null) return;
+    if ((payload.azimuth_deg !== null && !Number.isFinite(payload.azimuth_deg)) ||
+        (payload.inclination_deg !== null && !Number.isFinite(payload.inclination_deg))) {
+      alert("请输入有效的数字");
+      return;
+    }
+    writeTrajOverride(launch.id, payload);
+    rerenderTrajectoryModal(launch);
+  });
+
+  document.getElementById("trajResetBtn")?.addEventListener("click", () => {
+    writeTrajOverride(launch.id, null);
+    notamCache.delete(launch.id);
+    rerenderTrajectoryModal(launch);
+  });
+}
+
+/** In-memory NOTAM results for the current session, so reopening the modal
+ *  can redraw the drop-zone polygons without re-querying. */
+const notamCache = new Map();
+
+function renderNotamResult(launch, d) {
+  const el = document.getElementById("notamResult");
+  if (!el) return;
+  el.hidden = false;
+
+  if (!d.found) {
+    el.innerHTML = `<div class="notam-status">
+      未找到与该发射匹配的航警落区。<br/>
+      <span class="dim">航警通常在发射前 24–48 小时发布；国内任务的远端落区有时不走 QDCA 危险区格式。</span>
+    </div>`;
+    return;
+  }
+
+  const zones = d.drop_zones || [];
+  const lz = d.launch_zone || [];
+
+  if (!zones.length && !lz.length) {
+    el.innerHTML = `<div class="notam-status">检索到航警，但没有落在发射场可达范围内的落区多边形。</div>`;
+    return;
+  }
+
+  const rows = [...lz.map(z => ({ ...z, kind: 'launch' })), ...zones.map(z => ({ ...z, kind: 'drop' }))]
+    .map(z => `
+      <tr>
+        <td class="mono">${escapeHTML(z.notamNumber)}</td>
+        <td class="mono">${z.kind === 'launch' ? '发射区' : z.rangeKm + ' km'}</td>
+        <td class="mono">${z.bearingDeg}°</td>
+        <td class="mono">${z.implied_incl_deg}°</td>
+        <td>${z.kind === 'launch' ? '—' :
+             (z.conventional_orbit ? '<span class="ok">常规</span>' : '<span class="extreme">极端</span>')}</td>
+      </tr>`).join('');
+
+  const verdict = d.azimuth_deg != null ? `
+    <div class="notam-verdict ok">
+      <div>
+        <b>反解方位角 ${d.azimuth_deg}°</b>
+        <span class="dim">${zones.length} 个落区与发射窗口吻合，已作为轨迹方位角
+          ${d.bearing_spread_deg != null ? `（彼此偏差 ≤ ${d.bearing_spread_deg}°）` : ''}</span>
+      </div>
+      <span class="applied">APPLIED</span>
+    </div>` : `
+    <div class="notam-verdict warn">
+      <div>
+        <b>仅找到发射区，未找到下游落区</b>
+        <span class="dim">发射区贴着发射场，无法反解飞行方向；远端落区航警常在 T-24h 内才发布</span>
+      </div>
+    </div>`;
+
+  el.innerHTML = `
+    <table class="notam-table">
+      <thead><tr>
+        <th>NOTAM</th><th>距离/类型</th><th>方位角</th><th>反解倾角</th><th>判定</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${verdict}
+    <div class="notam-foot dim">
+      来源 ${escapeHTML(d.source || 'FAA NOTAM Search')}
+      ${d.cached ? ' · 缓存' : ''}
+      ${d.fetched_at ? ' · ' + new Date(d.fetched_at).toLocaleString() : ''}
+    </div>`;
 }
 
 function closeModal() {
