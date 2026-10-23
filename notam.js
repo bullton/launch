@@ -196,6 +196,10 @@ async function openSession() {
           '--disable-blink-features=AutomationControlled',
           '--disable-features=IsolateOrigins,site-per-process',
           '--no-first-run', '--no-default-browser-check',
+          /* required on container hosts: Chromium's setuid sandbox cannot
+             work as root, and /dev/shm is typically 64 MB under Docker */
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
         ],
       });
       const ctx = await browser.newContext({
