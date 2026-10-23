@@ -1245,6 +1245,9 @@ button { font: inherit; cursor: pointer; }
   margin-left: 5px;
   vertical-align: middle;
 }
+.m-flag.notam {
+  background: var(--inflight, #5ac8fa);
+}
 .m-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));

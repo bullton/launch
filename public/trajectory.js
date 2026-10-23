@@ -182,6 +182,13 @@
     if (mUpper.includes("STARLINK"))
       return absLat < 53.0 ? 53.0 : 70.0;
 
+    // Yaogan (遥感) — China's retrograde high-inclination reconnaissance
+    // series. Yaogan 50-01/02/03 all inserted at ~142° retrograde, launched
+    // south-west from Taiyuan. Checked before the generic LEO default because
+    // LL2 reports these as plain "LEO" with no inclination.
+    if (/YAOGAN|ZHANTUIXING|遥感/i.test(mUpper))
+      return 142.0;
+
     // Default LEO: a bit above pad latitude, never below 28.5°
     // Taiyuan LC-9A (38.85°N) with unknown orbit → almost certainly SSO (~97.6°),
     // never a low-inclination LEO, so override the lat+1.5 default.
@@ -196,6 +203,12 @@
 
     for (const kw of SOUTHWARD_PADS)
       if (padUpper.includes(kw.toUpperCase())) return true;
+
+    /* Retrograde orbits (i > 90°) launched from the northern hemisphere can
+       only be reached by flying southward — the required heading is > 180°
+       from north, i.e. south of the pad. Yaogan / Yaogan-50 reconnaissance
+       series at ~142° falls in this class. */
+    if (incDeg > 90 && lat0 > 0) return true;
 
     if (orbitAbr === "SSO" && lat0 < 50.0) return true;
     if (lat0 > 0 && Math.abs(incDeg - Math.abs(lat0)) < 1.0) return true;

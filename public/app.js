@@ -484,11 +484,38 @@ function openModal(launch) {
   /* manual override for this launch (azimuth / inclination), if the user set one */
   const trajOverride = readTrajOverride(launch.id);
 
+  /* ── NOTAM drop-zone bearing (permanent archive) ──
+     The server keeps the first NOTAM lookup that produced a usable bearing,
+     forever. That archive is the ground truth for the launch direction: LL2
+     publishes no inclination and rewrites the mission record after T-0, so
+     the orbit-class inference is frequently wrong (and can flip between
+     "upcoming" and "past" for the same mission).
+
+     Precedence: manual override > archived NOTAM bearing > inference. */
+  const notamBearing = launch.notam?.azimuth_deg;
+  const notamInc     = launch.notam?.implied_inclination_deg;
+  const hasNotamBearing = Number.isFinite(Number(notamBearing));
+
+  const engineOpts = { ...(trajOverride || {}) };
+  let bearingSource = "inferred";
+  if (!engineOpts.azimuth_deg && hasNotamBearing) {
+    engineOpts.azimuth_deg = Number(notamBearing);
+    bearingSource = "notam";
+    /* keep INC consistent with AZ: both then come from the same measurement.
+       The implied inclination differs from the true one by a couple of
+       degrees (the ground bearing is rotated by Earth rotation) but it is
+       self-consistent and never contradicts the archived direction. */
+    if (engineOpts.inclination_deg == null && Number.isFinite(Number(notamInc))) {
+      engineOpts.inclination_deg = Number(notamInc);
+    }
+  }
+  if (engineOpts.azimuth_deg) bearingSource = trajOverride?.azimuth_deg != null ? "manual" : bearingSource;
+
   if (!isNaN(padLat) && !isNaN(padLon)) {
     try {
       engResult = GlobalLaunchTrajectoryEngine.generatePrediction(
         launch, 600, 30,
-        trajOverride || {}
+        engineOpts
       );
       az = engResult.metadata.azimuth_ground_eff_deg;
 
@@ -679,8 +706,8 @@ function openModal(launch) {
           title="手动修正发射方位角 / inclination">${trajOverride ? 'MANUAL ON' : 'MANUAL · 手动修正'}</button>
       </h3>
       <div class="m-trajectory-stats">
-        <span>INC <b>${engResult ? engResult.metadata.inclination_deg.toFixed(2) : "—"}°</b>${trajOverride?.inclination_deg != null ? ' <i class="m-flag">MANUAL</i>' : ""}</span>
-        <span>AZ <b>${az != null ? az.toFixed(2) : "—"}°</b>${trajOverride?.azimuth_deg != null ? ' <i class="m-flag">MANUAL</i>' : ""}</span>
+        <span>INC <b>${engResult ? engResult.metadata.inclination_deg.toFixed(2) : "—"}°</b>${trajOverride?.inclination_deg != null ? ' <i class="m-flag">MANUAL</i>' : (bearingSource === "notam" ? ' <i class="m-flag notam">NOTAM</i>' : "")}</span>
+        <span>AZ <b>${az != null ? az.toFixed(2) : "—"}°</b>${trajOverride?.azimuth_deg != null ? ' <i class="m-flag">MANUAL</i>' : (bearingSource === "notam" ? ' <i class="m-flag notam">NOTAM</i>' : "")}</span>
         <span>DIR <b>${engResult ? (engResult.metadata.launch_southward ? "SOUTH" : "NORTH") : "—"}</b></span>
         <span>PROFILE <b>${engResult ? engResult.metadata.profile_type.replace("_", " ") : "—"}</b></span>
         <span>ROCKET <b>${escapeHTML(engResult ? engResult.metadata.rocket_name : (cfg.full_name || "—"))}</b></span>
@@ -925,13 +952,22 @@ function openModal(launch) {
   const searchBtn = document.getElementById("notamSearchBtn");
   const resultEl  = document.getElementById("notamResult");
 
-  searchBtn?.addEventListener("click", async () => {
-    searchBtn.disabled = true;
-    searchBtn.textContent = "检索中… (~30s)";
-    resultEl.hidden = false;
-    resultEl.innerHTML = `<div class="notam-status">
-      正在启动浏览器会话并检索 FAA NOTAM… 首次查询需绕过 Akamai 校验，约 30 秒
-    </div>`;
+  /**
+   * Run a NOTAM drop-zone lookup for this launch.
+   * `silent` skips the progress UI (used by the automatic path).
+   * Returns the NOTAM payload, or null on failure.
+   */
+  async function runNotamLookup({ silent = false } = {}) {
+    if (searchBtn && !silent) {
+      searchBtn.disabled = true;
+      searchBtn.textContent = "检索中… (~30s)";
+    }
+    if (resultEl && !silent) {
+      resultEl.hidden = false;
+      resultEl.innerHTML = `<div class="notam-status">
+        正在启动浏览器会话并检索 FAA NOTAM… 首次查询需绕过 Akamai 校验，约 30 秒
+      </div>`;
+    }
     try {
       const r = await fetch(`${API}/notam?id=${encodeURIComponent(launch.id)}`);
       if (!r.ok) {
@@ -940,30 +976,72 @@ function openModal(launch) {
       }
       const data = await r.json();
       notamCache.set(launch.id, data);
-      renderNotamResult(launch, data);
-      /* A bearing that survived the plausibility gate is better evidence than
-         the inclination heuristic, so adopt it and redraw. */
-      if (data.found && data.azimuth_deg != null) {
-        const cur = readTrajOverride(launch.id);
-        if (!cur || Math.abs((cur.azimuth_deg ?? NaN) - data.azimuth_deg) > 0.05) {
-          writeTrajOverride(launch.id, {
-            azimuth_deg: data.azimuth_deg,
-            inclination_deg: cur?.inclination_deg ?? null,
-          });
-          rerenderTrajectoryModal(launch);
-          return;
-        }
-      }
+      if (!silent) renderNotamResult(launch, data);
+      return data;
     } catch (err) {
-      resultEl.innerHTML = `<div class="notam-status err">
-        查询失败：${escapeHTML(err.message)}<br/>
-        <span class="dim">NOTAM 源依赖 Playwright + 本机 Chrome，若不可用可用下方手动填值。</span>
-      </div>`;
+      if (resultEl && !silent) {
+        resultEl.innerHTML = `<div class="notam-status err">
+          查询失败：${escapeHTML(err.message)}<br/>
+          <span class="dim">NOTAM 源依赖 Playwright + 本机 Chrome，若不可用可用下方手动填值。</span>
+        </div>`;
+      }
+      return null;
     } finally {
-      searchBtn.disabled = false;
-      searchBtn.textContent = "重新查询";
+      if (searchBtn && !silent) {
+        searchBtn.disabled = false;
+        searchBtn.textContent = "重新查询";
+      }
+    }
+  }
+
+  searchBtn?.addEventListener("click", async () => {
+    const data = await runNotamLookup();
+    if (!data) return;
+    /* A bearing that survived the plausibility gate is better evidence than
+       the inclination heuristic, so adopt it and redraw. */
+    if (data.found && data.azimuth_deg != null) {
+      const cur = readTrajOverride(launch.id);
+      if (!cur || Math.abs((cur.azimuth_deg ?? NaN) - data.azimuth_deg) > 0.05) {
+        writeTrajOverride(launch.id, {
+          azimuth_deg: data.azimuth_deg,
+          inclination_deg: cur?.inclination_deg ?? null,
+        });
+        rerenderTrajectoryModal(launch);
+      }
     }
   });
+
+  /* ── automatic NOTAM pull when the orbit class is ambiguous ──
+     LL2 publishes no inclination for most missions, so the engine has to
+     guess one from the orbit class — and "LEO" covers everything from 28°
+     to 142°. When we have no archived NOTAM bearing for such a mission, the
+     drop zones are the only real evidence of the flight direction, so pull
+     them in the background. The server archives the result permanently, so
+     this happens at most once per launch. */
+  (function maybeAutoNotam() {
+    if (hasNotamBearing) return;                       // already archived
+    if (trajOverride?.azimuth_deg != null) return;     // user has an opinion
+    if (notamCache.get(launch.id)) return;             // already tried this session
+
+    /* only bother when the inference is a guess AND the generic classes are
+       in play — a published SSO/GTO/PO class is specific enough */
+    const src = engResult?.metadata?.inclination_source;
+    const abbr = (orbit.abbrev || "").toUpperCase();
+    const generic = ["LEO", "MEO", "HEO", "N/A", ""].includes(abbr);
+    if (src !== "inferred" || !generic) return;
+
+    runNotamLookup({ silent: true }).then((data) => {
+      if (data && data.found && data.azimuth_deg != null) {
+        /* the server archived the bearing permanently — mirror it onto the
+           local launch object so the redraw uses it */
+        launch.notam = {
+          azimuth_deg: data.azimuth_deg,
+          implied_inclination_deg: data.implied_inclination_deg ?? null,
+        };
+        rerenderTrajectoryModal(launch);
+      }
+    });
+  })();
 
   ovrPanel?.querySelectorAll("[data-inc]").forEach((b) => {
     b.addEventListener("click", () => {
@@ -1430,7 +1508,10 @@ function rerenderLists() {
   const kept = hasActiveFilters() ? all.filter(matchesFilters) : all;
 
   const future = kept.filter((l) => new Date(l.net).getTime() >= now);
-  const past   = kept.filter((l) => new Date(l.net).getTime() <  now);
+  /* Past launches read newest-first: the most recently flown mission sits at
+     the top of the grid, the oldest at the bottom. */
+  const past   = kept.filter((l) => new Date(l.net).getTime() <  now)
+                  .sort((a, b) => new Date(b.net).getTime() - new Date(a.net).getTime());
 
   const totalU = _lastCache.upcoming.results.filter((l) => new Date(l.net).getTime() >= now).length;
   const totalP = _lastCache.past.results.length;

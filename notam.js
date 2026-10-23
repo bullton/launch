@@ -481,6 +481,12 @@ async function findLaunchNotams(launch, opts = {}) {
     pad: [padLat, padLon],
     azimuth_deg: azimuthDeg,
     bearing_spread_deg: spreadDeg,
+    /* orbital inclination implied by the measured bearing — the inverse of
+       the azimuth derivation, and the value the trajectory engine needs when
+       LL2 publishes nothing but a bare "LEO" class. */
+    implied_inclination_deg: azimuthDeg != null
+      ? impliedInclination(azimuthDeg, padLat)
+      : null,
     launch_window_known: useWindow,
     launch_zone: launchZone.sort((a, b) => a.rangeKm - b.rangeKm),
     drop_zones: eligible.sort((a, b) => a.rangeKm - b.rangeKm),

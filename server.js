@@ -115,6 +115,9 @@ function summarize(l) {
       remaining_seconds: Math.floor((target - now) / 1000),
       is_future:        target > now,
     },
+    /* Archived NOTAM drop-zone bearing — the measured ground direction of
+       the launch, when it was ever published. Null if we have none. */
+    notam: l.notam ?? null,
     last_updated: l.last_updated || null,
   };
 }
@@ -184,6 +187,38 @@ async function refresh() {
 }
 
 /* ────────  cache payload  ──────── */
+/**
+ * Attach the archived NOTAM drop-zone bearing to a launch record.
+ * The bearing is measured from the FAA hazard areas laid out along the real
+ * ground track, so it is the only ground truth for missions whose orbital
+ * inclination LL2 never publishes. It is kept forever, so a mission that
+ * has already flown still carries its real direction.
+ */
+function withNotam(l) {
+  if (!l) return l;
+  const n = dbMod.getNotam(db, l.id);
+  if (!n || n.azimuth == null) return l;
+  /* Backfill the implied inclination for rows stored before notam.js
+     started reporting it: i = acos(sin(A_ground) · cos(lat0)). */
+  let inc = n.implied_inclination_deg;
+  if (inc == null && Number.isFinite(Number(n.azimuth))) {
+    const padLat = parseFloat(l.pad?.latitude);
+    if (Number.isFinite(padLat)) {
+      const s = Math.sin(Number(n.azimuth) * Math.PI / 180) * Math.cos(padLat * Math.PI / 180);
+      inc = Math.round((Math.acos(Math.max(-1, Math.min(1, s))) * 180 / Math.PI) * 100) / 100;
+    }
+  }
+  return {
+    ...l,
+    notam: {
+      azimuth_deg: n.azimuth,
+      implied_inclination_deg: inc ?? null,
+      source: 'FAA NOTAM Search',
+      fetched_at: n.fetchedAt ? new Date(n.fetchedAt).toISOString() : null,
+    },
+  };
+}
+
 function payload() {
   const nowISO = new Date().toISOString();
   const meta   = dbMod.getCacheMeta(db);
@@ -192,8 +227,8 @@ function payload() {
     updatedMs:     meta.lastRefresh,
     upcomingCount: meta.upcomingCount,
     pastCount:     meta.pastCount,
-    upcoming:      { count: meta.upcomingCount, results: dbMod.getUpcoming(db, 60, nowISO) },
-    past:          { count: meta.pastCount,     results: dbMod.getPast    (db, 12, nowISO) },
+    upcoming:      { count: meta.upcomingCount, results: dbMod.getUpcoming(db, 60, nowISO).map(withNotam) },
+    past:          { count: meta.pastCount,     results: dbMod.getPast    (db, 12, nowISO).map(withNotam) },
   };
 }
 
@@ -239,7 +274,7 @@ app.get('/api/ll/next', (req, res) => {
   const nowISO = new Date().toISOString();
   const list = dbMod.getUpcoming(db, 1, nowISO);
   if (!list.length) return res.status(404).json({ error: 'no upcoming launch' });
-  res.json(summarize(list[0]));
+  res.json(summarize(withNotam(list[0])));
 });
 
 /* GET /api/ll/latest — most recent past launch */
@@ -247,7 +282,7 @@ app.get('/api/ll/latest', (req, res) => {
   const nowISO = new Date().toISOString();
   const list = dbMod.getPast(db, 1, nowISO);
   if (!list.length) return res.status(404).json({ error: 'no past launch' });
-  res.json(summarize(list[0]));
+  res.json(summarize(withNotam(list[0])));
 });
 
 /* GET /api/ll/upcoming?limit=N — list of upcoming launches (summaries) */
@@ -255,7 +290,7 @@ app.get('/api/ll/upcoming', (req, res) => {
   const nowISO = new Date().toISOString();
   const limit  = Math.min(parseInt(req.query.limit, 10) || 10, 60);
   const list   = dbMod.getUpcoming(db, limit, nowISO);
-  res.json({ count: list.length, results: list.map(summarize) });
+  res.json({ count: list.length, results: list.map((l) => summarize(withNotam(l))) });
 });
 
 /* GET /api/ll/past?limit=N — list of recent past launches (summaries) */
@@ -263,7 +298,7 @@ app.get('/api/ll/past', (req, res) => {
   const nowISO = new Date().toISOString();
   const limit  = Math.min(parseInt(req.query.limit, 10) || 10, 60);
   const list   = dbMod.getPast(db, limit, nowISO);
-  res.json({ count: list.length, results: list.map(summarize) });
+  res.json({ count: list.length, results: list.map((l) => summarize(withNotam(l))) });
 });
 
 /* GET /api/ll/launch/:id — full launch record by id (or slug) */
@@ -285,7 +320,7 @@ app.get('/api/ll/launch/:id', (req, res) => {
     }
   }
   if (!row) return res.status(404).json({ error: 'not found' });
-  try { res.json(JSON.parse(row.data)); }
+  try { res.json(withNotam(JSON.parse(row.data))); }
   catch { res.status(500).json({ error: 'corrupt data' }); }
 });
 
@@ -434,8 +469,16 @@ app.get("/api/ll/calendar.ics", (req, res) => {
 
    Results are cached per launch because the scraper needs a real browser
    session (Akamai) and NOTAMs only matter in the last ~48 h before T-0.
+
+   The first lookup that yields a usable bearing is kept PERMANENTLY (see
+   db.putNotam). LL2 rewrites a mission record after liftoff and the FAA
+   withdraws the launch-window NOTAMs shortly after T-0, so re-querying a
+   flown mission returns nothing — the archived bearing is the only surviving
+   evidence of the real flight direction.
    `?force=1` bypasses the cache. */
 const NOTAM_TTL_MS = 6 * 60 * 60 * 1000;
+/* How far ahead of T-0 we proactively pull NOTAMs. */
+const NOTAM_PREPULL_WINDOW_MS = 48 * 3600 * 1000;
 let notamMod = null;
 try { notamMod = require('./notam'); }
 catch (e) { console.warn('  ⚠ notam module unavailable:', e.message); }
@@ -451,8 +494,13 @@ app.get('/api/ll/notam', async (req, res) => {
   if (!launch) return res.status(404).json({ error: 'launch not found' });
 
   const force = req.query.force === '1' || req.query.force === 'true';
+
   if (!force) {
     const hit = dbMod.getNotam(db, id);
+    /* A stored bearing is authoritative forever — serve it regardless of age. */
+    if (hit && hit.azimuth != null) {
+      return res.json({ ...hit, cached: true, permanent: true });
+    }
     if (hit && Date.now() - hit.fetchedAt < NOTAM_TTL_MS) {
       return res.json({ ...hit, cached: true });
     }
@@ -472,13 +520,56 @@ app.get('/api/ll/notam', async (req, res) => {
     return res.json({ found: false, launch_name: launch.name, cached: false });
   }
 
-  dbMod.putNotam(db, id, result.azimuth_deg ?? null, { found: true, ...result });
+  const stored = dbMod.putNotam(db, id, result.azimuth_deg ?? null, { found: true, ...result },
+                                { force: force && result.azimuth_deg != null });
   console.log(`  ✓ NOTAM ${launch.name}: ${result.drop_zones?.length || 0} zone(s)` +
     (result.azimuth_deg != null ? `, bearing ${result.azimuth_deg}°` : ', no usable bearing') +
+    (stored ? '' : ' (kept earlier archive)') +
     ` (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
 
   res.json({ found: true, cached: false, ...result });
 });
+
+/* ────────  NOTAM pre-pull (background)  ────────
+   NOTAMs only exist in the ~48 h before T-0 and they are withdrawn right
+   after the launch, so we pull them eagerly for anything inside that window
+   and archive the bearing permanently. That way a mission that has already
+   flown still has its real launch direction. */
+async function prepullNotams() {
+  if (!notamMod) return;
+  const nowISO = new Date().toISOString();
+  const horizon = new Date(Date.now() + NOTAM_PREPULL_WINDOW_MS).toISOString();
+  /* launches from a day ago through the next 48 h */
+  const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  const rows = db.prepare(`SELECT data FROM launches
+                            WHERE net >= ? AND net <= ?
+                            ORDER BY net ASC LIMIT 12`).all(since, horizon);
+
+  for (const r of rows) {
+    let launch;
+    try { launch = JSON.parse(r.data); } catch { continue; }
+    const id = launch.id;
+    if (!id) continue;
+
+    const hit = dbMod.getNotam(db, id);
+    /* already have a permanent bearing → nothing to do */
+    if (hit && hit.azimuth != null) continue;
+    /* looked up recently and found nothing → don't hammer FAA */
+    if (hit && Date.now() - hit.fetchedAt < NOTAM_TTL_MS) continue;
+
+    try {
+      const result = await notamMod.getLaunchDropZones(launch);
+      if (!result) { dbMod.putNotam(db, id, null, { found: false }); continue; }
+      dbMod.putNotam(db, id, result.azimuth_deg ?? null, { found: true, ...result });
+      if (result.azimuth_deg != null) {
+        console.log(`  ✓ NOTAM pre-pull ${launch.name}: bearing ${result.azimuth_deg}° ` +
+                    `(implied i ≈ ${result.implied_inclination_deg}°)`);
+      }
+    } catch (e) {
+      console.warn(`  ✗ notam pre-pull failed for ${launch.name}:`, e.message);
+    }
+  }
+}
 
 /* ────────  startup banner  ──────── */
 function logBanner(prefix = '') {
@@ -505,6 +596,22 @@ if (!metaAtBoot.lastRefresh) {
 } else {
   console.log(`  ✓ cache loaded from disk — ${metaAtBoot.totalRows} rows, last ${new Date(metaAtBoot.lastRefresh).toISOString()}`);
   logBanner();
+}
+
+/* ────────  NOTAM pre-pull scheduler  ────────
+   Runs on its own timer (NOTAM scraping is slow and browser-backed, so it
+   must not ride along with the manual LL2 refresh). It archives the launch
+   bearing for every mission inside the T-48 h window, so the direction
+   survives the FAA withdrawing the NOTAMs and LL2 rewriting the record. */
+const NOTAM_PREPULL_INTERVAL_MS = 3 * 60 * 60 * 1000;   // every 3 h
+if (notamMod) {
+  setTimeout(() => {
+    prepullNotams()
+      .catch((e) => console.warn('  ✗ notam pre-pull failed:', e.message))
+      .finally(() => setInterval(() => {
+        prepullNotams().catch((e) => console.warn('  ✗ notam pre-pull failed:', e.message));
+      }, NOTAM_PREPULL_INTERVAL_MS));
+  }, 20_000);   // let the server come up first
 }
 
 /* ────────  start listening  ──────── */
