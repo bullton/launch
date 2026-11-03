@@ -239,7 +239,7 @@ function renderHero(launch) {
     img.src = url;
   } else {
     bg.style.backgroundImage =
-      "radial-gradient(ellipse at 50% 100%, #1a1a1a 0%, #000 60%)";
+      "radial-gradient(ellipse at 50% 100%, #1b2129 0%, #06080a 62%)";
     bg.classList.add("ready");
   }
   hero.tick();
@@ -570,7 +570,7 @@ function openModal(launch) {
     `<div class="m-cell"><div class="k">${escapeHTML(k)}</div><div class="v">${v}${small ? ` <small>${escapeHTML(small)}</small>` : ""}</div></div>`;
 
   const programList = (cfg.program || [])
-    .map(p => `<span style="color:#fff">${escapeHTML(p.name)}</span>`)
+    .map(p => `<span style="color:var(--text)">${escapeHTML(p.name)}</span>`)
     .join(' · ') || "—";
 
   let stageHTML = "";
@@ -633,7 +633,7 @@ function openModal(launch) {
     .map(l => `<a class="m-link" href="${escapeHTML(l.url)}" target="_blank" rel="noopener">${escapeHTML(l.title || l.source || "INFO")}</a>`)
     .join("");
   const vidLinks = (launch.vidURLs || [])
-    .map(l => `<a class="m-link video" href="${escapeHTML(l.url)}" target="_blank" rel="noopener">▶ ${escapeHTML(l.title || "WEBCAST")}</a>`)
+    .map(l => `<a class="m-link video" href="${escapeHTML(l.url)}" target="_blank" rel="noopener">${escapeHTML(l.title || "WEBCAST")}</a>`)
     .join("");
   const linksHTML = (infoLinks + vidLinks) || `<div class="m-desc" style="color:var(--text-mute)">No links</div>`;
 
@@ -833,7 +833,7 @@ function openModal(launch) {
 
       /* launch marker */
       L.circleMarker([padLat, padLon], {
-        radius: 7, color: '#4cd964', fillColor: '#4cd964',
+        radius: 7, color: '#3dd68c', fillColor: '#3dd68c',
         fillOpacity: 1, weight: 2,
       }).addTo(map).bindPopup(`Launch · ${escapeHTML(pad.name || "—")}`);
 
@@ -860,7 +860,7 @@ function openModal(launch) {
         const orbitSeg   = splitIdx > 0 ? trajLine.slice(splitIdx)       : null;
 
         L.polyline(activeSeg, {
-          color: 'rgba(255,159,10,0.85)',
+          color: 'rgba(255,176,32,0.9)',
           weight: 2.5,
           lineCap: 'round',
         }).addTo(map);
@@ -879,7 +879,7 @@ function openModal(launch) {
       flightEvents.forEach((ev) => {
         if (ev.label === "Liftoff") return;             // already drawn as green launch marker
         L.circleMarker([ev.lat, ev.lon], {
-          radius: 4, color: '#ffffff', fillColor: '#888',
+          radius: 4, color: '#edf1f5', fillColor: '#76818e',
           fillOpacity: 0.8, weight: 1,
         }).addTo(map).bindPopup(
           `<b>${escapeHTML(ev.label)}</b><br/>T+${ev.t}s`
@@ -893,8 +893,8 @@ function openModal(launch) {
           if (!z.polygon || z.polygon.length < 3) continue;
           const isLaunchZone = z.rangeKm < 120;
           L.polygon(z.polygon.map(([la, lo]) => [la, lo]), {
-            color: isLaunchZone ? '#ffd60a' : '#30d158',
-            fillColor: isLaunchZone ? '#ffd60a' : '#30d158',
+            color: isLaunchZone ? '#ffc53d' : '#3dd68c',
+            fillColor: isLaunchZone ? '#ffc53d' : '#3dd68c',
             fillOpacity: 0.12,
             weight: 1.5,
             dashArray: '4 3',
@@ -910,7 +910,7 @@ function openModal(launch) {
       dropZones.forEach((d, i) => {
         if (d.lat == null || d.lon == null) return;
         const isFirst = i === 0;
-        const color = isFirst ? '#ff9f0a' : '#5ac8fa';
+        const color = isFirst ? '#ff9f45' : '#5ac8fa';
         L.circleMarker([d.lat, d.lon], {
           radius: 6, color, fillColor: color,
           fillOpacity: 0.85, weight: 2,
