@@ -40,3 +40,6 @@ build/
 
 # misc dev / reference files
 api_data_sample.txt
+
+# runtime logs
+data/logs/

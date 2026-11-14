@@ -1,10 +1,29 @@
 const express = require('express');
 const path = require('path');
+const childProcess = require('child_process');
 const dbMod  = require('./db');
+const logs   = require('./logs');
+
+logs.init();
+logs.teeConsole();
 
 const app = express();
 const API_BASE = 'https://ll.thespacedevs.com/2.2.0';
 const UA       = 'rocket-tracker/1.0 (https://thespacedevs.com)';
+
+const STARTED_AT = Date.now();
+const PKG_VERSION = (() => {
+  try { return require('./package.json').version || null; } catch { return null; }
+})();
+const GIT_COMMIT = (() => {
+  try {
+    return childProcess
+      .execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 })
+      .toString().trim() || null;
+  } catch { return null; }
+})();
+const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
+let LAST_FETCH = null;
 
 /* ────────  CLI / env parsing  ──────── */
 function parseArgs(argv) {
@@ -122,6 +141,64 @@ function summarize(l) {
   };
 }
 
+/* ────────  admin console access gate  ────────
+   The log console shows upstream traffic and internal errors, so it is not
+   public. With ADMIN_TOKEN set it opens with ?token=… (cookie remembered);
+   otherwise it only answers private-network clients. nginx forwards the real
+   client address, so the forwarded headers decide, not the socket. */
+function clientIp(req) {
+  const raw = String(
+    req.headers['x-real-ip'] ||
+    req.headers['x-forwarded-for'] ||
+    req.socket?.remoteAddress || '',
+  );
+  return raw.split(',')[0].trim().replace(/^::ffff:/, '');
+}
+
+function isPrivateIp(ip) {
+  if (!ip) return false;
+  if (ip === '::1' || ip === 'localhost') return true;
+  if (ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.')) return true;
+  if (ip.startsWith('169.254.')) return true;
+  const m = ip.match(/^172\.(\d{1,3})\./);
+  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+  return false;
+}
+
+function readCookie(header, name) {
+  for (const part of String(header || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
+
+function adminGate(req, res, next) {
+  if (ADMIN_TOKEN) {
+    const q = String(req.query.token || '');
+    const cookie = readCookie(req.headers.cookie, 'admin_token');
+    if (q && q === ADMIN_TOKEN) {
+      res.setHeader('Set-Cookie',
+        `admin_token=${encodeURIComponent(ADMIN_TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+      return next();
+    }
+    if (cookie === ADMIN_TOKEN) return next();
+    return res.status(401)
+      .type('text/plain; charset=utf-8')
+      .send('401 · 需要访问令牌 / token required\n打开 /admin?token=<ADMIN_TOKEN>');
+  }
+  if (isPrivateIp(clientIp(req))) return next();
+  return res.status(403)
+    .type('text/plain; charset=utf-8')
+    .send('403 · 后台仅限内网访问 / admin console is LAN-only\n如需外网访问，请设置 ADMIN_TOKEN 后使用 /admin?token=…');
+}
+
+app.get(['/admin', '/admin.html'], adminGate, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+app.use('/api/admin', adminGate);
+
 /* ────────  static assets  ──────── */
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -140,26 +217,32 @@ app.use('/api', (req, res, next) => {
 const db = dbMod.openDb();
 
 /* ────────  upstream fetcher  ──────── */
+async function timedFetch(url) {
+  const t0 = Date.now();
+  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  return { res, ms: Date.now() - t0 };
+}
+
 async function fetchUpstream() {
   const nowISO = new Date().toISOString();
-  const u = await fetch(
+  const up = await timedFetch(
     `${API_BASE}/launch/upcoming/?limit=60&mode=detailed&ordering=net&net__gte=${encodeURIComponent(nowISO)}`,
-    { headers: { 'User-Agent': UA } },
   );
-  const p = await fetch(
-    `${API_BASE}/launch/previous/?limit=24&mode=detailed&ordering=-net`,
-    { headers: { 'User-Agent': UA } },
-  );
+  const u = up.res;
+  const pa = await timedFetch(`${API_BASE}/launch/previous/?limit=24&mode=detailed&ordering=-net`);
+  const p = pa.res;
+  const timing = { upcoming: { status: u.status, ms: up.ms }, past: { status: p.status, ms: pa.ms } };
   if (!u.ok || !p.ok) {
     const err = new Error(`upstream ${u.status}/${p.status}`);
     err.upcomingStatus = u.status;
     err.pastStatus     = p.status;
+    err.timing         = timing;
     /* LL2 returns a JSON body like {"detail":"... Expected available in N seconds."}
        on 429; we surface it to the client so the UI can show a precise wait time. */
     err.retryAfter = parseRetryAfter(u.headers.get('retry-after'), u);
     throw err;
   }
-  return { upcoming: await u.json(), past: await p.json() };
+  return { upcoming: await u.json(), past: await p.json(), timing };
 }
 
 /* Parse Retry-After. May be either an HTTP-date or a seconds value.
@@ -174,16 +257,50 @@ function parseRetryAfter(header, response) {
 
 /* ────────  refresh DB from upstream  ──────── */
 async function refresh() {
-  const { upcoming, past } = await fetchUpstream();
-  dbMod.upsertLaunches(db, upcoming.results, 'upcoming');
-  dbMod.upsertLaunches(db, past.results,     'past');
-  dbMod.setState(db, 'last_refresh',     Date.now());
-  dbMod.setState(db, 'upcoming_count',    upcoming.count);
-  dbMod.setState(db, 'past_count',        past.count);
-  invalidateIcsCache();
+  const t0 = Date.now();
+  let upstream, upcoming, past;
+  try {
+    const r = await fetchUpstream();
+    upstream = r.timing;
+    upcoming = r.upcoming;
+    past     = r.past;
+    dbMod.upsertLaunches(db, upcoming.results, 'upcoming');
+    dbMod.upsertLaunches(db, past.results,     'past');
+    dbMod.setState(db, 'last_refresh',     Date.now());
+    dbMod.setState(db, 'upcoming_count',    upcoming.count);
+    dbMod.setState(db, 'past_count',        past.count);
+    invalidateIcsCache();
+  } catch (e) {
+    const durationMs = Date.now() - t0;
+    const status = e.upcomingStatus || e.pastStatus || null;
+    const rateLimited = status === 429;
+    logs.log(
+      'api', 'error',
+      `LL2 获取失败 · ${rateLimited ? '上游限流 429' : (status ? `上游 HTTP ${status}` : '网络/解析错误')} · ${e.message}`,
+      { durationMs, status, meta: { retryAfter: e.retryAfter || null, upstream: e.timing || null } },
+    );
+    e.durationMs = durationMs;
+    LAST_FETCH = { ok: false, at: Date.now(), durationMs, status, error: String(e.message || e), retryAfter: e.retryAfter || null };
+    throw e;
+  }
   const meta = dbMod.getCacheMeta(db);
+  const summary = {
+    ok: true,
+    durationMs: Date.now() - t0,
+    updated: Date.now(),
+    upcomingCount: upcoming.count,
+    pastCount: past.count,
+    totalRows: meta.totalRows,
+    upstream,
+  };
+  logs.log(
+    'api', 'info',
+    `LL2 获取成功 · 即将 ${upcoming.count} · 历史 ${past.count} · 共 ${meta.totalRows} 条`,
+    { durationMs: summary.durationMs, status: 200, meta: { upstream } },
+  );
+  LAST_FETCH = { ok: true, at: summary.updated, durationMs: summary.durationMs, status: 200 };
   console.log(`  ✓ DB refreshed · upcoming=${upcoming.count}, past=${past.count}, total=${meta.totalRows} (ICS cache invalidated)`);
-  return true;
+  return summary;
 }
 
 /* ────────  cache payload  ──────── */
@@ -243,14 +360,15 @@ app.get('/api/ll/cache', (req, res) => {
 
 app.post('/api/ll/refresh', async (req, res) => {
   try {
-    await refresh();
-    res.json(payload());
+    const summary = await refresh();
+    res.json({ ...payload(), _meta: summary });
   } catch (e) {
     const rateLimited = e.upcomingStatus === 429 || e.pastStatus === 429;
     res.status(rateLimited ? 429 : 502).json({
       error:     rateLimited ? 'rate_limited' : 'refresh_failed',
       detail:    String(e?.message || e),
       retryAfter: e.retryAfter || null,
+      durationMs: e.durationMs ?? null,
     });
   }
 });
@@ -265,6 +383,63 @@ app.get('/api/ll/stats', (req, res) => {
     pastCount:     m.pastCount,
     nowISO:        new Date().toISOString(),
   });
+});
+
+/* ────────  ADMIN CONSOLE API  ──────── */
+app.get('/api/admin/stats', (req, res) => {
+  const m = dbMod.getCacheMeta(db);
+  let notamRows = 0;
+  try { notamRows = db.prepare('SELECT COUNT(*) AS c FROM notam_cache').get().c; } catch { /* ignore */ }
+  res.json({
+    dbFile:        dbMod.DB_PATH,
+    totalRows:     m.totalRows,
+    upcomingCount: m.upcomingCount,
+    pastCount:     m.pastCount,
+    lastRefresh:   m.lastRefresh ? new Date(m.lastRefresh).toISOString() : null,
+    lastRefreshMs: m.lastRefresh || null,
+    notamRows,
+    startedAt:     new Date(STARTED_AT).toISOString(),
+    uptimeSec:     Math.round((Date.now() - STARTED_AT) / 1000),
+    pid:           process.pid,
+    node:          process.version,
+    version:       PKG_VERSION,
+    commit:        GIT_COMMIT,
+    guard:         ADMIN_TOKEN ? 'token' : 'lan',
+    lastFetch:     LAST_FETCH,
+    serverTime:    new Date().toISOString(),
+  });
+});
+
+app.get('/api/admin/logs', (req, res) => {
+  const entries = logs.query({
+    kind:  req.query.kind,
+    level: req.query.level,
+    q:     req.query.q,
+    limit: req.query.limit,
+  });
+  res.json({ count: entries.length, entries, kind: req.query.kind || 'all', level: req.query.level || 'all' });
+});
+
+app.get('/api/admin/notam', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 40, 200);
+  const rows = db.prepare(
+    'SELECT launch_id, fetched_at, azimuth_deg, payload FROM notam_cache ORDER BY fetched_at DESC LIMIT ?',
+  ).all(limit);
+  const results = rows.map((r) => {
+    let p = {};
+    try { p = JSON.parse(r.payload); } catch { /* ignore */ }
+    return {
+      launch_id:              r.launch_id,
+      launch_name:            p.launch_name || null,
+      fetched_at:             new Date(r.fetched_at).toISOString(),
+      found:                  p.found !== false,
+      azimuth_deg:            r.azimuth_deg,
+      implied_inclination_deg: p.implied_inclination_deg ?? null,
+      zones:                  (p.drop_zones || []).length,
+      permanent:              r.azimuth_deg != null,
+    };
+  });
+  res.json({ count: results.length, results });
 });
 
 /* ────────  PUBLIC API  ──────── */
@@ -511,17 +686,33 @@ app.get('/api/ll/notam', async (req, res) => {
   try {
     result = await notamMod.getLaunchDropZones(launch);
   } catch (e) {
+    logs.log('notam', 'error', `NOTAM 查询失败 · ${launch.name || id} · ${e.message}`,
+      { durationMs: Date.now() - t0, meta: { id } });
     console.warn('  ✗ notam lookup failed:', e.message);
     return res.status(502).json({ error: 'notam_lookup_failed', detail: e.message });
   }
 
   if (!result) {
     dbMod.putNotam(db, id, null, { found: false });
+    logs.log('notam', 'warn', `NOTAM 未命中 · 未找到匹配落区 · ${launch.name || id}`,
+      { durationMs: Date.now() - t0, meta: { id, found: false } });
     return res.json({ found: false, launch_name: launch.name, cached: false });
   }
 
   const stored = dbMod.putNotam(db, id, result.azimuth_deg ?? null, { found: true, ...result },
                                 { force: force && result.azimuth_deg != null });
+  logs.log(
+    'notam', result.azimuth_deg != null ? 'info' : 'warn',
+    `NOTAM ${result.azimuth_deg != null ? '命中' : '仅发射区'} · ${launch.name || id} · ` +
+    `${result.drop_zones?.length || 0} 个落区` +
+    (result.azimuth_deg != null ? ` · 方位角 ${result.azimuth_deg}°` : ' · 无可用方位角') +
+    (stored ? '' : ' · 保留旧档案'),
+    {
+      durationMs: Date.now() - t0,
+      status: 200,
+      meta: { id, zones: result.drop_zones?.length || 0, azimuth: result.azimuth_deg ?? null },
+    },
+  );
   console.log(`  ✓ NOTAM ${launch.name}: ${result.drop_zones?.length || 0} zone(s)` +
     (result.azimuth_deg != null ? `, bearing ${result.azimuth_deg}°` : ', no usable bearing') +
     (stored ? '' : ' (kept earlier archive)') +
@@ -558,14 +749,30 @@ async function prepullNotams() {
     if (hit && Date.now() - hit.fetchedAt < NOTAM_TTL_MS) continue;
 
     try {
+      const t0 = Date.now();
       const result = await notamMod.getLaunchDropZones(launch);
-      if (!result) { dbMod.putNotam(db, id, null, { found: false }); continue; }
+      const durationMs = Date.now() - t0;
+      if (!result) {
+        dbMod.putNotam(db, id, null, { found: false });
+        logs.log('notam', 'warn', `NOTAM 预拉取未命中 · ${launch.name}`,
+          { durationMs, meta: { id, trigger: 'prepull' } });
+        continue;
+      }
       dbMod.putNotam(db, id, result.azimuth_deg ?? null, { found: true, ...result });
+      const zones = result.drop_zones?.length || 0;
       if (result.azimuth_deg != null) {
+        logs.log('notam', 'info',
+          `NOTAM 预拉取命中 · ${launch.name} · ${zones} 个落区 · 方位角 ${result.azimuth_deg}°`,
+          { durationMs, meta: { id, trigger: 'prepull', zones, azimuth: result.azimuth_deg } });
         console.log(`  ✓ NOTAM pre-pull ${launch.name}: bearing ${result.azimuth_deg}° ` +
                     `(implied i ≈ ${result.implied_inclination_deg}°)`);
+      } else {
+        logs.log('notam', 'warn', `NOTAM 预拉取仅发射区 · ${launch.name} · ${zones} 个落区`,
+          { durationMs, meta: { id, trigger: 'prepull', zones } });
       }
     } catch (e) {
+      logs.log('notam', 'error', `NOTAM 预拉取失败 · ${launch.name} · ${e.message}`,
+        { meta: { id, trigger: 'prepull' } });
       console.warn(`  ✗ notam pre-pull failed for ${launch.name}:`, e.message);
     }
   }
@@ -574,6 +781,9 @@ async function prepullNotams() {
 /* ────────  startup banner  ──────── */
 function logBanner(prefix = '') {
   const netUrl = (HOST === '0.0.0.0' || HOST === '::') ? `http://localhost:${PORT}` : `http://${HOST}:${PORT}`;
+  logs.log('server', 'info', '服务启动 / server started', {
+    meta: { port: PORT, host: HOST, node: process.version, version: PKG_VERSION, commit: GIT_COMMIT, guard: ADMIN_TOKEN ? 'token' : 'lan' },
+  });
   console.log(`${prefix}\n  🚀 ROCKET — Launch Tracker`);
   console.log('  ─────────────────────────────────');
   console.log(`  Listening on  ${HOST}:${PORT}`);
@@ -587,6 +797,21 @@ function logBanner(prefix = '') {
    No background refresh — manual via POST /api/ll/refresh only.
    This keeps upstream request count at exactly the number of button
    clicks, avoiding 429 throttling from the Launch Library 2 API. */
+(() => {
+  /* The in-memory LAST_FETCH resets on restart; take the newest archived
+     result so the admin status card is right immediately. */
+  const last = logs.query({ kind: 'api', limit: 1 })[0];
+  if (last && !LAST_FETCH) {
+    LAST_FETCH = {
+      ok: last.level !== 'error',
+      at: last.ts,
+      durationMs: last.durationMs ?? null,
+      status: last.status ?? null,
+      error: last.level === 'error' ? last.msg : null,
+    };
+  }
+})();
+
 const metaAtBoot = dbMod.getCacheMeta(db);
 if (!metaAtBoot.lastRefresh) {
   console.log('  ⏳ cache empty — warming once on startup (no recurring refresh)…');

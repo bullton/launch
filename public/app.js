@@ -1611,6 +1611,43 @@ function updateLastFetchedLabel() {
 
 setInterval(updateLastFetchedLabel, 30 * 1000);
 
+/* ---- fetch result toast ---- */
+function showFetchToast({ ok, title, detail, timeout = 5000 }) {
+  let layer = document.querySelector("#toastLayer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "toastLayer";
+    layer.className = "toast-layer";
+    layer.setAttribute("role", "status");
+    layer.setAttribute("aria-live", "polite");
+    document.body.appendChild(layer);
+  }
+  layer.querySelectorAll(".toast").forEach((n) => n.remove());
+
+  const el = document.createElement("div");
+  el.className = `toast ${ok ? "ok" : "err"}`;
+  el.innerHTML = `
+    <span class="toast-ico" aria-hidden="true">${ok ? "✓" : "⚠"}</span>
+    <div class="toast-body">
+      <div class="toast-title"></div>
+      <div class="toast-detail"></div>
+    </div>
+    <button class="toast-close" type="button" aria-label="关闭">×</button>`;
+  el.querySelector(".toast-title").textContent = title;
+  el.querySelector(".toast-detail").textContent = detail || "";
+  layer.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("in"));
+
+  let timer = 0;
+  const dismiss = () => {
+    clearTimeout(timer);
+    el.classList.remove("in");
+    setTimeout(() => el.remove(), 220);
+  };
+  timer = setTimeout(dismiss, timeout);
+  el.querySelector(".toast-close").addEventListener("click", dismiss);
+}
+
 async function handleFetch() {
   if (isLoading) return;
   isLoading = true;
@@ -1632,6 +1669,12 @@ async function handleFetch() {
     applyCache(cache);
     /* Hide any "DB empty" hint once refresh succeeded */
     document.querySelector("#cacheHint")?.classList.remove("visible");
+
+    const meta = cache._meta || {};
+    const bits = [`即将 ${cache.upcomingCount ?? 0} · 历史 ${cache.pastCount ?? 0}`];
+    if (meta.durationMs != null) bits.push(`${(meta.durationMs / 1000).toFixed(1)}s`);
+    if (cache.updated) bits.push(fmtUTCClock(cache.updated));
+    showFetchToast({ ok: true, title: "获取成功 · FETCH OK", detail: bits.join(" · ") });
   } catch (e) {
     console.error("fetch failed", e);
     const glyph = e.status === 429 ? "⏳" : "⚠";
@@ -1658,6 +1701,7 @@ async function handleFetch() {
     );
     document.querySelector("#upcomingCount").textContent = "—  MISSIONS";
     document.querySelector("#pastCount").textContent     = "—  RECENT";
+    showFetchToast({ ok: false, title: label, detail: hint, timeout: 8000 });
   } finally {
     isLoading = false;
     setBtnState("ready");
