@@ -61,18 +61,26 @@ function openDb() {
 /**
  * Store a NOTAM lookup result.
  *
- * A row that already holds a usable bearing is treated as authoritative and
- * is never downgraded: a later failed lookup (found:false, null azimuth, or
- * a bare "0 zones" response) will not clobber it. Only `force: true` bypasses
- * that guard, for the rare case of a stale/corrupt row that must be replaced.
+ * Any archived hit (a row that found hazard areas, even without a usable
+ * bearing) is treated as authoritative and is never downgraded: a later
+ * failed lookup (found:false or a bare "0 zones" response) will not clobber
+ * it. A usable bearing additionally outranks a bearing-less hit. Only
+ * `force: true` bypasses that guard, for the rare case of a stale/corrupt
+ * row that must be replaced.
  */
 function putNotam(db, launchId, azimuthDeg, payload, opts = {}) {
-  const existing = db.prepare('SELECT azimuth_deg FROM notam_cache WHERE launch_id = ?')
+  const existing = db.prepare('SELECT azimuth_deg, payload FROM notam_cache WHERE launch_id = ?')
     .get(launchId);
   const hasUsable = existing && existing.azimuth_deg != null;
+  let hadResult = false;
+  if (existing) {
+    try { hadResult = JSON.parse(existing.payload).found === true; } catch { /* ignore */ }
+  }
   const incomingUsable = azimuthDeg != null && Number.isFinite(azimuthDeg);
+  const incomingFound = !!payload && payload.found === true;
 
-  if (hasUsable && !incomingUsable && !opts.force) {
+  if (!opts.force && existing &&
+      ((hasUsable && !incomingUsable) || (hadResult && !incomingFound))) {
     /* keep the original result, but note that we looked again */
     db.prepare(`UPDATE notam_cache
                 SET payload = json_set(payload, '$.last_recheck_at', ?)

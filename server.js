@@ -314,7 +314,9 @@ async function refresh() {
 function withNotam(l) {
   if (!l) return l;
   const n = dbMod.getNotam(db, l.id);
-  if (!n || n.azimuth == null) return l;
+  if (!n) return l;
+  const found = n.found === true || n.azimuth != null;
+  if (!found) return l;
   /* Backfill the implied inclination for rows stored before notam.js
      started reporting it: i = acos(sin(A_ground) · cos(lat0)). */
   let inc = n.implied_inclination_deg;
@@ -325,13 +327,21 @@ function withNotam(l) {
       inc = Math.round((Math.acos(Math.max(-1, Math.min(1, s))) * 180 / Math.PI) * 100) / 100;
     }
   }
+  /* Ship the whole archived payload, not just the bearing: the client uses
+     the polygons and NOTAM table to redraw the map after a page refresh
+     without asking the FAA again. */
   return {
     ...l,
     notam: {
-      azimuth_deg: n.azimuth,
+      found: true,
+      azimuth_deg: n.azimuth ?? null,
       implied_inclination_deg: inc ?? null,
-      source: 'FAA NOTAM Search',
-      fetched_at: n.fetchedAt ? new Date(n.fetchedAt).toISOString() : null,
+      bearing_spread_deg: n.bearing_spread_deg ?? null,
+      pad: n.pad ?? null,
+      launch_zone: n.launch_zone ?? [],
+      drop_zones: n.drop_zones ?? [],
+      source: n.source || 'FAA NOTAM Search',
+      fetched_at: n.fetched_at || (n.fetchedAt ? new Date(n.fetchedAt).toISOString() : null),
     },
   };
 }
@@ -672,8 +682,10 @@ app.get('/api/ll/notam', async (req, res) => {
 
   if (!force) {
     const hit = dbMod.getNotam(db, id);
-    /* A stored bearing is authoritative forever — serve it regardless of age. */
-    if (hit && hit.azimuth != null) {
+    /* Any archived hit is served forever: a bearing is ground truth, and a
+       bearing-less hit still carries the hazard-area polygons the UI draws.
+       Only an empty (found:false) lookup decays after NOTAM_TTL_MS. */
+    if (hit && (hit.azimuth != null || hit.found === true)) {
       return res.json({ ...hit, cached: true, permanent: true });
     }
     if (hit && Date.now() - hit.fetchedAt < NOTAM_TTL_MS) {

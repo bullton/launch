@@ -336,6 +336,13 @@ function openModal(launch) {
   const root = document.querySelector("#modalRoot");
   const body = document.querySelector("#modalBody");
 
+  /* Rehydrate the in-memory NOTAM cache from the server archive so the
+     drop-zone polygons and result table survive a page refresh without a
+     second FAA lookup. */
+  if (launch?.id && launch.notam?.found && !notamCache.has(launch.id)) {
+    notamCache.set(launch.id, { ...launch.notam, cached: true });
+  }
+
   const st = statusOf(launch.status);
   const lsp = launch.launch_service_provider || {};
   const rocket = launch.rocket || {};
@@ -814,6 +821,12 @@ function openModal(launch) {
 
   root.hidden = false;
   document.body.style.overflow = "hidden";
+
+  /* Show the archived lookup result immediately (page refresh / reopen). */
+  const archivedNotam = launch?.id ? notamCache.get(launch.id) : null;
+  if (archivedNotam && (archivedNotam.found || archivedNotam.drop_zones?.length)) {
+    renderNotamResult(launch, archivedNotam);
+  }
 
   /* initialize Leaflet map after DOM is visible */
   if (trajLine) {
